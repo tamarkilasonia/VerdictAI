@@ -1,0 +1,22 @@
+# Install with:  pip install -r requirements.txt   (inside the .venv)
+
+# UI
+streamlit>=1.40
+
+# LLM workflow and model clients
+langchain>=1.0
+langchain-ollama>=1.0     # LangChain integration for a local Ollama server
+langgraph>=1.0
+
+# Structured outputs
+pydantic>=2.7
+
+# Local, free embeddings (all-MiniLM-L6-v2). Also installs PyTorch.
+sentence-transformers>=3.0
+
+# Wikipedia API and .env loading
+requests>=2.31
+python-dotenv>=1.0
+
+# Tests
+pytest>=8.0
