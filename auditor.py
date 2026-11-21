@@ -320,6 +320,37 @@ def needs_revision(audit: dict[str, CheckOutcome]) -> bool:
     return any(outcome.status == "fail" for outcome in audit.values())
 
 
+def is_acceptable(audit: dict[str, CheckOutcome]) -> bool:
+    """May this answer be shown to the user? Only if no check failed (❌).
+
+    A contradicted claim always makes the hallucination check fail (see
+    align_score_with_labels), so an accepted answer has no claim that the
+    evidence contradicts. Unavailable checks (e.g. a rate limit) do not
+    reject an answer; the UI says that it could not be fully checked.
+    """
+    return bool(audit) and not needs_revision(audit)
+
+
+def pick_answer(audits: list[dict[str, CheckOutcome]]) -> int | None:
+    """Index of the answer to show, or None if no answer passed the audit.
+
+    audits: one audit per answer, PRIMARY first. Among the acceptable answers
+    the best is the one with the fewest ⚠️ checks, then the one whose
+    hallucination check is lowest (unverified counts as worst); on a tie
+    PRIMARY wins, because it is the stronger model.
+    """
+
+    def badness(index: int) -> tuple[int, float, int]:
+        audit = audits[index]
+        warnings = sum(outcome.status == "warn" for outcome in audit.values())
+        hallucination = audit.get("hallucination")
+        score = hallucination.result.score if hallucination and hallucination.result else 1.0
+        return (warnings, score, index)
+
+    acceptable = [i for i, audit in enumerate(audits) if is_acceptable(audit)]
+    return min(acceptable, key=badness) if acceptable else None
+
+
 def describe_problems(audit: dict[str, CheckOutcome]) -> list[str]:
     """Readable list of what the audit found (⚠️ and ❌ checks), for the reviser."""
     problems = []

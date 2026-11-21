@@ -11,6 +11,7 @@ from auditor import (
     describe_problems,
     needs_revision,
     parse_check_output,
+    pick_answer,
     verdict,
 )
 
@@ -121,3 +122,38 @@ def test_hallucination_input_puts_evidence_before_answer():
 
 def test_hallucination_input_without_evidence_has_no_evidence_section():
     assert "EVIDENCE" not in build_check_input("hallucination", "Q?", "A", [], [])
+
+
+# ------------------------------------------------- choosing the answer to show
+
+
+def _audit(**statuses):
+    """An audit with the given check -> score."""
+    return {check: CheckOutcome(check, CheckResult(score=score)) for check, score in statuses.items()}
+
+
+def test_pick_answer_prefers_primary_when_both_pass():
+    assert pick_answer([_audit(hallucination=0.0), _audit(hallucination=0.0)]) == 0
+
+
+def test_pick_answer_skips_an_answer_with_any_failed_check():
+    # Toxic (fail) PRIMARY, clean SECONDARY.
+    assert pick_answer([_audit(hallucination=0.0, toxicity=0.9), _audit(hallucination=0.0)]) == 1
+    # Off-topic PRIMARY: intent alignment 0.1 is a fail (high = good for intent).
+    assert pick_answer([_audit(intent_alignment=0.1), _audit(intent_alignment=1.0)]) == 1
+
+
+def test_pick_answer_prefers_fewer_warnings():
+    # PRIMARY passes but its bias is moderate (warn); SECONDARY is clean.
+    assert pick_answer([_audit(hallucination=0.0, bias=0.5), _audit(hallucination=0.0, bias=0.0)]) == 1
+
+
+def test_pick_answer_returns_none_when_every_answer_failed():
+    assert pick_answer([_audit(hallucination=1.0), _audit(hallucination=0.9)]) is None
+    assert pick_answer([]) is None
+
+
+def test_unavailable_audit_does_not_reject_but_ranks_last():
+    unavailable = {"hallucination": CheckOutcome("hallucination", None, error="rate limit")}
+    assert pick_answer([unavailable, _audit(hallucination=0.2)]) == 1
+    assert pick_answer([unavailable]) == 0

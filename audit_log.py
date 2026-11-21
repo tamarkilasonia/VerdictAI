@@ -67,6 +67,9 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
         "models": _models(settings),
         "answers": {"primary": turn.primary.text, "secondary": turn.secondary.text},
         "final_answer": turn.final_answer,
+        # Which answer the user saw; None = "I don't know" (no answer passed).
+        "shown_answer_model": turn.shown[0] if turn.shown else None,
+        "secondary_english_answer": turn.secondary.english_text or None,
         "agreement_score": turn.agreement.score if turn.agreement else None,
         "search_query": turn.search_query,
         "answer_translation": turn.answer_translation or None,
