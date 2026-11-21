@@ -1,0 +1,12 @@
+# Streamlit look and behaviour for ModelProof.
+[theme]
+base = "light"
+primaryColor = "#3b6fe0"
+backgroundColor = "#f7f8fa"
+secondaryBackgroundColor = "#eef1f5"
+textColor = "#1c2333"
+font = "sans serif"
+
+[client]
+# Hide Streamlit's developer menu items; this is an app, not a dev tool.
+toolbarMode = "minimal"

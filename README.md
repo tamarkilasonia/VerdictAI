@@ -1,4 +1,4 @@
-# 🛡️ ModelProof (Python)
+# ModelProof (Python)
 
 **A chat app that does not blindly trust one LLM.**
 
@@ -21,27 +21,27 @@ AI course project: every feature applies a concept from the course (see
    question plus the last few chat messages at the same time.
 2. **Agreement check.** Both answers are embedded with `all-MiniLM-L6-v2` and compared
    with cosine similarity. At or above the threshold (default 0.80) you see the primary
-   answer with a ✅ *models agree* badge; below it you see both answers side by side
-   with a ⚠️ *models disagree* warning. The score is always shown.
+   answer with a *models agree* badge; below it you see both answers side by side
+   with a *models disagree* badge. The score is always shown.
 3. **Evidence.** Wikipedia is searched with your question; the page introductions are
    split into short passages and **re-ranked** by similarity to the answer. The top 3
    passages become the evidence (shown with links).
 4. **Audit.** Four checks run in parallel, each returning a validated JSON result:
    `score` (0–1) plus `issues` (`quote` + `reason`).
 
-   | Check | Looks at | ✅ | ⚠️ | ❌ |
+   | Check | Looks at | Good | Moderate | Serious |
    |---|---|---|---|---|
    | Hallucination | answer vs. evidence | < 0.3 | 0.3–0.7 | ≥ 0.7 |
    | Bias | answer | < 0.3 | 0.3–0.7 | ≥ 0.7 |
    | Toxicity | answer | < 0.3 | 0.3–0.7 | ≥ 0.7 |
    | Intent alignment | recent conversation + answer | > 0.7 | 0.3–0.7 | ≤ 0.3 |
 
-5. **Human-in-the-loop revision.** If any check is ❌, the workflow **pauses** and asks
-   you. Click **✏️ Revise answer** and the primary model rewrites the answer using the
+5. **Human-in-the-loop revision.** If any check is *Serious*, the workflow **pauses** and
+   asks you. Click **Revise answer** and the primary model rewrites the answer using the
    audit's issues and the evidence; the new answer is audited again (at most 2
    revisions). The original and revised answers are shown side by side.
 6. **Audit trail.** Every interaction is appended to `logs/audit_log.jsonl`
-   (downloadable from the sidebar).
+   (downloadable with the *Download log* button in the header).
 
 ---
 
@@ -54,7 +54,7 @@ flowchart TD
     G --> C[compare<br/><i>embeddings + cosine similarity</i>]
     C --> R[retrieve_evidence<br/><i>Wikipedia search + re-ranking</i>]
     R --> A[audit<br/><i>4 checks in parallel</i>]
-    A -->|"any ❌ and revisions < 2"| H[human_review<br/><i>interrupt: waits for the user</i>]
+    A -->|"any check Serious and revisions < 2"| H[human_review<br/><i>interrupt: waits for the user</i>]
     A -->|otherwise| F[finalize<br/><i>memory + audit log</i>]
     H -->|Revise| V[revise<br/><i>primary fixes the answer</i>]
     H -->|Keep / new question| F
@@ -131,7 +131,8 @@ Ollama nor internet.
 ## Project structure
 
 ```
-app.py          Streamlit UI only (chat, audit panel, sidebar, review buttons)
+app.py          Streamlit UI only (chat, audit panel, header, review buttons)
+ui.py           Look and feel: CSS, line icons, small HTML pieces
 graph.py        LangGraph state, nodes, routing, checkpointer
 models.py       Chat-model factory configured from .env (+ retry with backoff)
 answers.py      Answer and revision prompts; asks both models in parallel

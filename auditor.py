@@ -161,8 +161,6 @@ def verdict(check: str, score: float) -> str:
     return "warn" if score < 0.7 else "fail"
 
 
-ICONS = {"pass": "✅", "warn": "⚠️", "fail": "❌", "unavailable": "❔"}
-
 # The hallucination score must agree with the auditor's own labels:
 UNVERIFIED_ONLY_MAX = 0.2  # no real contradiction -> at most this ("unverified" is not "false")
 CONTRADICTED_MIN = 0.7  # a real contradiction -> at least this (❌)
