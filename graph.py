@@ -43,14 +43,23 @@ from langgraph.types import interrupt
 
 from agreement import Agreement, compare_answers
 from audit_log import append_entry, build_entry, build_failure_entry
-from answers import ModelAnswer, ask_both, build_messages, revise_answer, translate_to_english
+from answers import (
+    ModelAnswer,
+    ask_both,
+    build_messages,
+    make_search_query,
+    revise_answer,
+    translate_to_english,
+)
 from auditor import (
     CheckOutcome,
     CheckResult,
     Issue,
+    build_check_input,
     describe_problems,
     needs_revision,
     run_audit,
+    run_check,
 )
 from config import MAX_REVISIONS, get_settings
 from retrieval import Passage, get_evidence, is_georgian
@@ -70,6 +79,7 @@ class Turn:
     search_query: str = ""  # what Wikipedia was searched for (English)
     audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of the final answer
     answer_translation: str = ""  # English version of a Georgian answer (ranked + audited)
+    secondary_check: CheckOutcome | None = None  # hallucination check of SECONDARY, if they disagree
     revisions: list[str] = field(default_factory=list)  # corrected answers, oldest first
     original_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # before revising
     revise_error: str | None = None
@@ -115,6 +125,7 @@ class ChatState(TypedDict, total=False):
     search_query: str
     audit: dict[str, CheckOutcome]
     answer_translation: str
+    secondary_check: CheckOutcome | None
     revisions: list[str]
     original_audit: dict[str, CheckOutcome]
     review_decision: str | None  # "revise" or "accept", set by human_review
@@ -136,6 +147,7 @@ def new_question_input(question: str) -> dict[str, Any]:
         "search_query": "",
         "audit": {},
         "answer_translation": "",
+        "secondary_check": None,
         "revisions": [],
         "original_audit": {},
         "review_decision": None,
@@ -159,6 +171,7 @@ def turn_from_state(state: ChatState) -> Turn:
         search_query=state.get("search_query", ""),
         audit=state.get("audit", {}),
         answer_translation=state.get("answer_translation", ""),
+        secondary_check=state.get("secondary_check"),
         revisions=state.get("revisions", []),
         original_audit=state.get("original_audit", {}),
         revise_error=state.get("revise_error"),
@@ -258,17 +271,25 @@ def _translation(text: str) -> str:
         return ""
 
 
+def _search_query(question: str) -> str:
+    """A few English keywords for Wikipedia; the question itself if that fails."""
+    try:
+        return make_search_query(get_settings().primary, question) or question
+    except Exception:  # noqa: BLE001 - e.g. rate limit: search with the question
+        return question
+
+
 @timed("evidence")
 def retrieve_evidence(state: ChatState) -> dict:
     """Find Wikipedia passages that can confirm or contradict the final answer.
 
-    Georgian is translated into English first: English Wikipedia is much
-    richer, and English passages are ranked more precisely against an English
-    answer than against a Georgian one. The answer's translation is kept
-    for the audit too, so it is made only once.
+    The search uses a few English keywords, not the whole question. A Georgian
+    answer is translated into English, because English passages are ranked more
+    precisely against an English answer; the translation is kept for the audit
+    too, so it is made only once.
     """
     answer = _final_answer(state)
-    query = _translation(state["question"]) or state["question"]
+    query = _search_query(state["question"])
     translation = _translation(answer)
     update: dict[str, Any] = {"search_query": query, "answer_translation": translation}
     try:
@@ -280,6 +301,26 @@ def retrieve_evidence(state: ChatState) -> dict:
         return {**update, "evidence_error": f"Wikipedia unavailable ({type(error).__name__}); checked without evidence."}
 
 
+def _models_disagree(state: ChatState) -> bool:
+    agreement = state.get("agreement")
+    return agreement is not None and not agreement.agree
+
+
+def _check_secondary(state: ChatState) -> CheckOutcome:
+    """Hallucination check of SECONDARY's answer, against the same evidence.
+
+    When the two models disagree, at least one of them is wrong. Auditing only
+    PRIMARY left the user guessing: SECONDARY once claimed an invented author
+    for "The Knight in the Panther's Skin" while every check showed green.
+    """
+    text = state["secondary"].text
+    english = _translation(text) or text
+    return run_check(
+        "hallucination",
+        build_check_input("hallucination", state["question"], english, [], _evidence_texts(state)),
+    )
+
+
 @timed("audit")
 def audit(state: ChatState) -> dict:
     """Run the four checks on the final (possibly revised) answer, in parallel.
@@ -289,15 +330,19 @@ def audit(state: ChatState) -> dict:
     as "Dutch" and flagged a correct answer as contradicted, 3 times out of 3.
     With the translation the false alarm was gone, and a wrong answer was
     still caught 3 times out of 3.
+    If the models disagree, SECONDARY's answer gets a hallucination check too
+    (only once: a revision changes PRIMARY's answer, not SECONDARY's).
     """
     answer = _final_answer(state)
     # revise() clears the translation, so a revised answer is translated anew.
     translation = state.get("answer_translation") or _translation(answer)
-    question = state.get("search_query") or state["question"]  # English if translated
     result = run_audit(
-        question, translation or answer, _recent_history(state), _evidence_texts(state)
+        state["question"], translation or answer, _recent_history(state), _evidence_texts(state)
     )
-    return {"audit": result, "answer_translation": translation}
+    update: dict[str, Any] = {"audit": result, "answer_translation": translation}
+    if _models_disagree(state) and state.get("secondary_check") is None:
+        update["secondary_check"] = _check_secondary(state)
+    return update
 
 
 def human_review(state: ChatState) -> dict:

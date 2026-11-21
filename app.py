@@ -101,6 +101,27 @@ def render_answer_body(turn: Turn) -> None:
         with column:
             st.html(f'<div class="mp-label">{answer.model}</div>')
             st.markdown(answer.text)
+    render_secondary_check(turn)
+
+
+def render_secondary_check(turn: Turn) -> None:
+    """When the models disagree, say whether SECONDARY's answer holds up too.
+
+    The full audit (strip below the answers) is about PRIMARY's answer; this
+    line tells the user which of the two disagreeing answers looks wrong.
+    """
+    check = turn.secondary_check
+    if check is None:
+        return
+    if check.status == "pass":
+        text = f"{turn.secondary.model}: no contradiction found either."
+    elif check.result is None:
+        text = f"{turn.secondary.model}: {check.error}"
+    else:
+        reasons = "; ".join(issue.reason for issue in check.result.issues[:2])
+        text = f"{turn.secondary.model}'s answer: {reasons}"
+    st.html(ui.audit_strip([(f"Hallucination ({turn.secondary.model})", check.status)]))
+    st.caption(text)
 
 
 def render_revised_body(turn: Turn) -> None:
