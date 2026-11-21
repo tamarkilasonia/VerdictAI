@@ -119,10 +119,10 @@ use the local copy.
 pytest -q
 ```
 
-48 small tests cover the pure functions: cosine similarity and the agreement threshold,
+50 small tests cover the pure functions: cosine similarity and the agreement threshold,
 parsing of the auditor's JSON (valid, fenced, invalid, out of range), verdict
 thresholds at their exact boundaries, the hallucination label rules, passage
-splitting and re-ranking, the audit log (including "the API key is never written"),
+splitting, re-ranking and dropping off-topic evidence, the audit log (including "the API key is never written"),
 and the graph's routing decisions. They use fake embeddings, so they need neither
 Ollama nor internet.
 

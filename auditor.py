@@ -60,6 +60,9 @@ and number in the ANSWER with the EVIDENCE, one by one.
 Score: 0 = nothing contradicted, 0.5 = a minor detail is contradicted,
 1 = the main claim is contradicted. If every issue is UNVERIFIED, the score is 0.2 or lower.
 Judge ONLY truthfulness, not tone, bias or relevance.
+If the ANSWER makes no factual claim about the world (a greeting, small talk, an
+offer to help, a question back to the user, or a remark about being an AI
+assistant), there is nothing to check: the output is {{"score": 0.0, "issues": []}}.
 
 {_JSON_RULES}
 
