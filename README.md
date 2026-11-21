@@ -197,10 +197,3 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
   (databases are out of scope for this project).
 - **Speed.** On a laptop one question takes roughly 15–40 s (two answers, four audit
   checks, optional revisions). Ollama may run parallel requests one after another.
-
----
-
-## Original project
-
-TypeScript/React version (Microsoft AI Agents Hackathon 2025, JavaScript/TypeScript
-category winner): <https://github.com/hgenix20/modelproof>
