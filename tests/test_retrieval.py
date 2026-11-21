@@ -29,3 +29,23 @@ def test_rerank_orders_by_similarity_and_keeps_top_k(monkeypatch):
 
 def test_rerank_with_no_passages():
     assert rerank("answer", []) == []
+
+
+def test_rerank_drops_off_topic_passage(monkeypatch):
+    # Cosine to the answer [1, 0]: "Relevant" = 0.8, "Song" = 0.1 (below MIN_RELEVANCE).
+    vectors = np.array([[1, 0], [0.8, 0.6], [0.1, 0.995]], dtype=float)
+    monkeypatch.setattr(retrieval, "embed", lambda texts: vectors)
+    passages = [Passage("Relevant", "url-r", "r"), Passage("Song", "url-s", "s")]
+
+    kept = rerank("answer", passages)
+
+    assert [p.title for p in kept] == ["Relevant"]
+
+
+def test_rerank_returns_nothing_when_all_passages_are_off_topic(monkeypatch):
+    # Small talk: Wikipedia finds only unrelated pages, so there is no evidence.
+    vectors = np.array([[1, 0], [0.2, 0.98], [0.0, 1.0]], dtype=float)
+    monkeypatch.setattr(retrieval, "embed", lambda texts: vectors)
+    passages = [Passage("Hello (song)", "url-1", "a"), Passage("Hello (film)", "url-2", "b")]
+
+    assert rerank("hello, how are you?", passages) == []

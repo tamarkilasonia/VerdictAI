@@ -22,6 +22,12 @@ SEARCH_PAGES = 3  # how many pages to fetch from Wikipedia search
 TOP_PASSAGES = 3  # how many passages to give the auditor
 SENTENCES_PER_PASSAGE = 3  # short passages keep the auditor's prompt small and focused
 TIMEOUT_SECONDS = 10
+# Wikipedia search always returns *something*: for "hello how are you" it finds
+# songs called "Hello". Off-topic passages like that scored 0.03-0.21 against
+# the answer, while real evidence scored 0.57-0.88. Passages below this cosine
+# score are dropped, because judging an answer "against" unrelated text makes
+# the auditor flag harmless answers as hallucinations.
+MIN_RELEVANCE = 0.35
 
 
 @dataclass
@@ -77,15 +83,26 @@ def split_passages(text: str, sentences_per_passage: int = SENTENCES_PER_PASSAGE
     ]
 
 
-def rerank(answer: str, passages: list[Passage], top_k: int = TOP_PASSAGES) -> list[Passage]:
-    """Keep the `top_k` passages whose meaning is closest to the answer."""
+def rerank(
+    answer: str,
+    passages: list[Passage],
+    top_k: int = TOP_PASSAGES,
+    min_score: float = MIN_RELEVANCE,
+) -> list[Passage]:
+    """Keep the `top_k` passages whose meaning is closest to the answer.
+
+    Passages scoring below `min_score` are dropped first. If none are left
+    (e.g. small talk, where Wikipedia has nothing relevant), the result is []
+    and the audit runs without evidence instead of with misleading evidence.
+    """
     if not passages:
         return []
     vectors = embed([answer] + [passage.text for passage in passages])
     answer_vector = vectors[0]
     for passage, vector in zip(passages, vectors[1:]):
         passage.score = cosine_similarity(answer_vector, vector)
-    return sorted(passages, key=lambda passage: passage.score, reverse=True)[:top_k]
+    relevant = [passage for passage in passages if passage.score >= min_score]
+    return sorted(relevant, key=lambda passage: passage.score, reverse=True)[:top_k]
 
 
 def get_evidence(question: str, answer: str, user_agent: str) -> list[Passage]:
@@ -96,3 +113,8 @@ def get_evidence(question: str, answer: str, user_agent: str) -> list[Passage]:
         for chunk in split_passages(intro)
     ]
     return rerank(answer, passages)
+
+
+##cd /Users/tamarkilasonia/modelproof-py
+##source .venv/bin/activate
+##pytest -q
