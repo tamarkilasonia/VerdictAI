@@ -36,11 +36,13 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
 
 from agreement import Agreement, compare_answers
+from audit_log import append_entry, build_entry, build_failure_entry
 from answers import ModelAnswer, ask_both, build_messages, revise_answer
 from auditor import (
     CheckOutcome,
@@ -184,6 +186,11 @@ def _final_answer(state: ChatState) -> str:
     return turn_from_state(state).final_answer
 
 
+def _thread_id() -> str:
+    """The conversation id of the current run (written to the audit log)."""
+    return get_config().get("configurable", {}).get("thread_id", "")
+
+
 def _evidence_texts(state: ChatState) -> list[str]:
     # Each passage keeps its page title, so the model knows the source.
     return [f"[{p.title}] {p.text}" for p in state.get("evidence", [])]
@@ -203,6 +210,12 @@ def generate_answers(state: ChatState) -> dict:
     update: dict[str, Any] = {"primary": primary, "secondary": secondary}
     if not primary.ok and not secondary.ok:
         update["error"] = f"No model could answer.\n\n- {primary.error}\n- {secondary.error}"
+        # The run ends here (finalize is skipped), so log the failure now.
+        append_entry(
+            build_failure_entry(
+                state["question"], settings, [primary.error, secondary.error], _thread_id()
+            )
+        )
     return update
 
 
@@ -285,8 +298,9 @@ def revise(state: ChatState) -> dict:
 
 
 def finalize(state: ChatState) -> dict:
-    """The turn is done: save it to memory (for the models) and to the UI list."""
+    """The turn is done: write the audit log, save it to memory and to the UI list."""
     turn = turn_from_state(state)
+    append_entry(build_entry(turn, get_settings(), _thread_id()))
     return {
         # The models remember the FINAL answer, so follow-up questions build
         # on the corrected version.
