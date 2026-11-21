@@ -22,6 +22,7 @@ import requests
 from agreement import cosine_similarity, embed
 
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
+GEORGIAN_WIKIPEDIA_API = "https://ka.wikipedia.org/w/api.php"  # only for showing sources
 SEARCH_PAGES = 3  # how many pages to fetch from Wikipedia search
 TOP_PASSAGES = 3  # how many passages to give the auditor
 SENTENCES_PER_PASSAGE = 3  # short passages keep the auditor's prompt small and focused
@@ -121,6 +122,69 @@ def rerank(
         passage.score = cosine_similarity(answer_vector, vector)
     relevant = [passage for passage in passages if passage.score >= min_score]
     return sorted(relevant, key=lambda passage: passage.score, reverse=True)[:top_k]
+
+
+def georgian_titles(english_titles: list[str], user_agent: str) -> list[str]:
+    """Titles of the Georgian versions of these English Wikipedia pages.
+
+    Uses the pages' language links (the "ქართული" link in Wikipedia's sidebar),
+    so the Georgian page is about exactly the same topic. Pages without a
+    Georgian version are skipped.
+    """
+    params = {
+        "action": "query",
+        "format": "json",
+        "formatversion": 2,
+        "titles": "|".join(english_titles),
+        "prop": "langlinks",
+        "lllang": "ka",
+        "redirects": 1,
+    }
+    response = requests.get(
+        WIKIPEDIA_API, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS
+    )
+    response.raise_for_status()
+    pages = response.json().get("query", {}).get("pages", [])
+    return [page["langlinks"][0]["title"] for page in pages if page.get("langlinks")]
+
+
+def get_georgian_sources(english_titles: list[str], answer: str, user_agent: str) -> list[Passage]:
+    """Passages from Georgian Wikipedia about the same pages as the evidence.
+
+    Shown to Georgian-speaking users so they can read the sources in their
+    own language. They are NOT given to the auditor: Georgian Wikipedia's
+    introductions are much shorter (e.g. its "Penicillin" introduction is about
+    the drug group and says nothing about who discovered it), and the auditor
+    misreads Georgian.
+    """
+    titles = georgian_titles(sorted(set(english_titles)), user_agent)
+    if not titles:
+        return []
+    params = {
+        "action": "query",
+        "format": "json",
+        "formatversion": 2,
+        "titles": "|".join(titles),
+        "prop": "extracts|info",
+        "exintro": 1,
+        "explaintext": 1,
+        "exlimit": len(titles),
+        "inprop": "url",
+    }
+    response = requests.get(
+        GEORGIAN_WIKIPEDIA_API, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS
+    )
+    response.raise_for_status()
+    pages = response.json().get("query", {}).get("pages", [])
+    passages = [
+        Passage(title=page["title"], url=page.get("fullurl", ""), text=chunk)
+        for page in pages
+        if page.get("extract")
+        for chunk in split_passages(page["extract"])
+    ]
+    # Georgian passages vs. the Georgian answer: same language, so the
+    # multilingual embeddings compare them directly.
+    return rerank(answer, passages)
 
 
 def get_evidence(query: str, answer: str, user_agent: str) -> list[Passage]:

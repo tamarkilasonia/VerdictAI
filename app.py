@@ -206,7 +206,20 @@ def render_issues(turn: Turn) -> None:
 
 def render_evidence(turn: Turn) -> None:
     """The Wikipedia passages the hallucination check was judged against."""
-    html = '<div class="mp-section">Evidence · Wikipedia</div>'
+    html = ""
+    if turn.georgian_sources:
+        # Georgian question: the same pages on Georgian Wikipedia, to read in
+        # Georgian. The check itself used the English passages below.
+        html += '<div class="mp-section">წყაროები · ქართული Wikipedia</div>'
+        html += "".join(
+            ui.evidence_card(p.title, p.url, p.text, p.score, "გახსენი Wikipedia-ზე →")
+            for p in turn.georgian_sources
+        )
+        html += (
+            '<div class="mp-muted">შემოწმებისთვის გამოყენებულია ინგლისური Wikipedia, '
+            "რადგან იქ მეტი ფაქტია (ქვემოთ).</div>"
+        )
+    html += '<div class="mp-section">Evidence used for the check · English Wikipedia</div>'
     if turn.search_query and turn.search_query != turn.question:
         # A Georgian question was translated: show what was actually searched.
         html += f'<div class="mp-muted">Searched for: “{ui.escape(turn.search_query)}”</div>'
