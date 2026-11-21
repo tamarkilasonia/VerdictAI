@@ -15,7 +15,7 @@ English passages with the Georgian text, only less precisely.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import requests
 
@@ -156,8 +156,10 @@ def georgian_titles(english_titles: list[str], user_agent: str) -> list[str]:
     return [page["langlinks"][0]["title"] for page in pages if page.get("langlinks")]
 
 
-def _georgian_intros(titles: list[str], user_agent: str) -> list[tuple[str, str, str]]:
-    """(title, url, intro) of these Georgian Wikipedia pages."""
+def _intros(
+    titles: list[str], user_agent: str, api: str = GEORGIAN_WIKIPEDIA_API
+) -> list[tuple[str, str, str]]:
+    """(title, url, intro) of these Wikipedia pages (Georgian by default)."""
     params = {
         "action": "query",
         "format": "json",
@@ -169,9 +171,7 @@ def _georgian_intros(titles: list[str], user_agent: str) -> list[tuple[str, str,
         "exlimit": len(titles),
         "inprop": "url",
     }
-    response = requests.get(
-        GEORGIAN_WIKIPEDIA_API, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS
-    )
+    response = requests.get(api, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS)
     response.raise_for_status()
     pages = response.json().get("query", {}).get("pages", [])
     return [(p["title"], p.get("fullurl", ""), p["extract"]) for p in pages if p.get("extract")]
@@ -192,7 +192,7 @@ def get_georgian_sources(
     Ranked against the (Georgian) answer; the same relevance filter applies.
     """
     linked = georgian_titles(sorted(set(english_titles)), user_agent) if english_titles else []
-    pages = _georgian_intros(linked, user_agent) if linked else []
+    pages = _intros(linked, user_agent) if linked else []
     seen = {title for title, _, _ in pages}
     found = [page for page in search_wikipedia(georgian_query, user_agent, GEORGIAN_WIKIPEDIA_API)
              if page[0] not in seen]
@@ -204,6 +204,37 @@ def get_georgian_sources(
     # Georgian passages vs. the Georgian answer: same language, so the
     # multilingual embeddings compare them directly.
     return rerank(answer, passages)
+
+
+def best_passage_for(question: str, passages: list[Passage]) -> Passage | None:
+    """The passage closest to the QUESTION (not to an answer), or None.
+
+    Works on copies, so the relevance scores shown with the evidence stay as
+    they are.
+    """
+    copies = [replace(passage) for passage in passages]
+    best = rerank(question, copies, top_k=1)
+    return best[0] if best else None
+
+
+def wikipedia_answer(
+    question: str, passages: list[Passage], user_agent: str, api: str = WIKIPEDIA_API
+) -> Passage | None:
+    """Wikipedia's own answer to the question, shown when no AI answer passed.
+
+    The page whose passage is closest to the question is chosen. Its first
+    sentences (the definition, e.g. "ვეფხისტყაოსანი — XII საუკუნის ქართველი
+    პოეტის, შოთა რუსთაველის ... პოემა") come first, because the single closest
+    passage is often on topic without containing the answer; that passage is
+    added if it is a different one. The text is quoted, never rewritten.
+    """
+    best = best_passage_for(question, passages)
+    if best is None:
+        return None
+    intros = _intros([best.title], user_agent, api)
+    lead = split_passages(intros[0][2])[0] if intros else best.text
+    text = lead if best.text == lead else f"{lead}\n\n…\n\n{best.text}"
+    return replace(best, text=text)
 
 
 def get_evidence(query: str, answer: str, user_agent: str) -> list[Passage]:

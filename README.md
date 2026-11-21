@@ -5,8 +5,9 @@
 ModelProof asks two language models the same question, audits **both** answers for
 **hallucination, bias, toxicity and intent alignment** against **real Wikipedia
 evidence**, and shows you **one answer: the one that passed the check**. If neither
-passed, it says honestly that it does not know, and you can ask for a **corrected
-answer** built from the evidence. It works in **English and Georgian**: every answer
+passed, it shows **Wikipedia's own text** instead (from Georgian Wikipedia for a
+Georgian question), or says honestly that it does not know, and you can ask for a
+**corrected answer** built from the evidence. It works in **English and Georgian**: every answer
 is written in the language of the question.
 
 
@@ -52,15 +53,20 @@ is written in the language of the question.
    | Toxicity | answer | < 0.3 | 0.3–0.7 | ≥ 0.7 |
    | Intent alignment | recent conversation + answer | > 0.7 | 0.3–0.7 | ≤ 0.3 |
 
-5. **One answer in the chat.** An answer may be shown only if **none** of its checks is
-   *Serious*; a contradicted fact always makes the hallucination check Serious. If both
-   pass, the one with fewer warnings and fewer unverified details is shown (Gemini on a
-   tie). If one fails, only the other is shown. If **both fail**, the chat says *"I don't
-   know a reliable answer"* (in the question's language) and the panel shows both in
-   red. The models remember only what you saw, so a follow-up never builds on a wrong
-   answer. If a check was unavailable (e.g. a rate limit), the answer is marked *Not
-   fully checked*.
-6. **Human-in-the-loop revision.** When no answer passed, the workflow **pauses** and
+5. **One answer in the chat.** An AI answer may be shown only if its facts **were
+   checked** and **none** of its checks is *Serious*; a contradicted fact always makes
+   the hallucination check Serious. If both pass, the one with fewer warnings and fewer
+   unverified details is shown (Gemini on a tie). If one fails, only the other is shown.
+   If **no AI answer passed** (or the auditor could not run), the chat shows
+   **Wikipedia's own text**, quoted with a link: the first sentences of the page closest
+   to the question, plus its most relevant passage. A Georgian question gets Georgian
+   Wikipedia; if it has nothing relevant, English Wikipedia translated by Gemini (marked
+   as a translation). Only if Wikipedia has nothing relevant either does the chat say
+   *"I don't know a reliable answer"*. Example: the auditor was over its limit and
+   Gemini claimed Akaki Tsereteli wrote the poem «ბედნიერი ერი»; the chat instead showed
+   Georgian Wikipedia: «…ილია ჭავჭავაძის ამავე სახელწოდების ლექსის მიხედვით». The
+   models remember only what you saw, so a follow-up never builds on a wrong answer.
+6. **Human-in-the-loop revision.** When the AI answers were checked and none passed, the workflow **pauses** and
    asks you. Click **Revise answer** and Gemini rewrites its answer from the audit's
    issues and the evidence; the new answer is audited again (at most 2 revisions).
 7. **Audit trail.** Every interaction is appended to `logs/audit_log.jsonl`
@@ -161,7 +167,7 @@ runs use the local copy.
 pytest -q
 ```
 
-86 small tests cover the pure functions: cosine similarity and the agreement threshold,
+94 small tests cover the pure functions: cosine similarity and the agreement threshold,
 parsing of the auditor's JSON (valid, fenced, invalid, out of range), verdict
 thresholds at their exact boundaries, the hallucination label rules, passage
 splitting, re-ranking and dropping off-topic evidence, the audit log (including "the
@@ -171,7 +177,9 @@ translation after a revision, quotes kept), auditing both answers (once each, ev
 revision), the Georgian Wikipedia sources (only for Georgian questions, Georgian-only
 pages translated for the auditor, never breaking the check), the English route for Qwen
 on Georgian questions, choosing the one answer to show (both pass, one fails, both fail
-and "I don't know" in English and Georgian, unavailable checks), the two-service settings and the error messages (rate limit,
+and "I don't know" in English and Georgian, unchecked answers never shown), Wikipedia's
+own answer (Georgian first, English translated, the reason shown), no revision or retry
+when the auditor's daily limit is used up, the two-service settings and the error messages (rate limit,
 wrong key, unknown model, busy service). They use fakes instead of real AI services
 and embeddings, so they need neither API keys nor internet.
 
@@ -262,7 +270,11 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
 
 - **Free tiers.** Gemini and Groq limit requests per minute and per day, and the limits
   change over time (Groq, November 2026: 1000 requests per day and 8000 tokens per
-  minute for each model, and only 1000 *output* tokens per minute for Qwen). One question uses 11 requests (2 answers, 1 search query, 4 audit
+  minute for each model, and only 1000 *output* tokens per minute for Qwen). The tightest
+  limit is the **auditor's 200,000 tokens per day**: one question's two audits use
+  about 6,600, so roughly **30 questions a day** can be fully fact-checked. After that,
+  the chat shows Wikipedia's text instead of unchecked AI answers, and the limit frees
+  up gradually over the next hours. One question uses 11 requests (2 answers, 1 search query, 4 audit
   checks for each answer), plus up to 7 for a Georgian question (the question
   and Qwen's answer for Qwen's English route, Gemini's answer for the audit, Georgian
   keywords, up to 3 translations of Georgian-only pages); the two audits use

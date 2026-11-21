@@ -140,7 +140,8 @@ def test_pick_answer_skips_an_answer_with_any_failed_check():
     # Toxic (fail) PRIMARY, clean SECONDARY.
     assert pick_answer([_audit(hallucination=0.0, toxicity=0.9), _audit(hallucination=0.0)]) == 1
     # Off-topic PRIMARY: intent alignment 0.1 is a fail (high = good for intent).
-    assert pick_answer([_audit(intent_alignment=0.1), _audit(intent_alignment=1.0)]) == 1
+    off_topic = _audit(hallucination=0.0, intent_alignment=0.1)
+    assert pick_answer([off_topic, _audit(hallucination=0.0, intent_alignment=1.0)]) == 1
 
 
 def test_pick_answer_prefers_fewer_warnings():
@@ -153,7 +154,16 @@ def test_pick_answer_returns_none_when_every_answer_failed():
     assert pick_answer([]) is None
 
 
-def test_unavailable_audit_does_not_reject_but_ranks_last():
-    unavailable = {"hallucination": CheckOutcome("hallucination", None, error="rate limit")}
-    assert pick_answer([unavailable, _audit(hallucination=0.2)]) == 1
-    assert pick_answer([unavailable]) == 0
+def test_an_unchecked_answer_is_never_shown():
+    # The hallucination check could not run (rate limit): the facts are unknown.
+    unchecked = {"hallucination": CheckOutcome("hallucination", None, error="rate limit")}
+    assert pick_answer([unchecked, _audit(hallucination=0.2)]) == 1
+    assert pick_answer([unchecked]) is None
+    assert pick_answer([_audit(bias=0.0)]) is None  # no hallucination check at all
+
+
+def test_an_unavailable_minor_check_counts_as_a_warning():
+    partly = _audit(hallucination=0.0)
+    partly["bias"] = CheckOutcome("bias", None, error="rate limit")
+    assert pick_answer([partly, _audit(hallucination=0.0, bias=0.0)]) == 1
+    assert pick_answer([partly]) == 0

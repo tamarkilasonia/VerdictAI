@@ -62,16 +62,37 @@ from auditor import (
     run_audit,
 )
 from config import MAX_REVISIONS, get_settings
-from retrieval import Passage, get_evidence, get_georgian_sources, is_georgian
+from retrieval import (
+    GEORGIAN_WIKIPEDIA_API,
+    WIKIPEDIA_API,
+    Passage,
+    get_evidence,
+    get_georgian_sources,
+    is_georgian,
+    wikipedia_answer,
+)
 
 
 # Shown instead of an answer when both answers failed the audit: a wrong
 # answer is worse than none.
-NO_RELIABLE_ANSWER = {
-    "en": "I don't know a reliable answer to this: both AI answers failed the fact "
-    "check (see the analysis on the right).",
-    "ka": "ამ კითხვაზე სანდო პასუხი არ ვიცი: ორივე AI-ის პასუხმა შემოწმება ვერ "
-    "გაიარა (ანალიზი იხილეთ მარჯვნივ).",
+# When no AI answer passed, the user gets Wikipedia's own text (quoted, not
+# rewritten), or, if Wikipedia had nothing relevant, an honest "I don't know".
+# Why no AI answer is shown: "failed" (a check found a problem) or "unchecked"
+# (the auditor could not run, e.g. a rate limit).
+WHY_NO_AI_ANSWER = {
+    ("failed", "en"): "The AI answers did not pass the fact check.",
+    ("failed", "ka"): "AI-ების პასუხებმა ფაქტების შემოწმება ვერ გაიარა.",
+    ("unchecked", "en"): "The AI answers could not be fact-checked right now (service limit).",
+    ("unchecked", "ka"): "AI-ების პასუხების შემოწმება ახლა ვერ მოხერხდა (სერვისის ლიმიტი).",
+}
+FROM_WIKIPEDIA = {
+    "en": "Here is what Wikipedia says:",
+    "ka": "აი, რა წერია Wikipedia-ში:",
+}
+TRANSLATED_NOTE = "(ინგლისური Wikipedia-დან; თარგმანი: Gemini)"
+DONT_KNOW = {
+    "en": "So I don't know a reliable answer to this (see the analysis on the right).",
+    "ka": "ამიტომ ამ კითხვაზე სანდო პასუხი არ ვიცი (ანალიზი იხილეთ მარჯვნივ).",
 }
 
 
@@ -91,6 +112,7 @@ class Turn:
     audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of the final answer
     answer_translation: str = ""  # English version of a Georgian answer (ranked + audited)
     secondary_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of SECONDARY's answer
+    wiki_answer: Passage | None = None  # Wikipedia's own answer, used if no AI answer passed
     revisions: list[str] = field(default_factory=list)  # corrected answers, oldest first
     original_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # before revising
     revise_error: str | None = None
@@ -132,12 +154,29 @@ class Turn:
         return None if index is None else candidates[index][:2]
 
     @property
+    def facts_checked(self) -> bool:
+        """True if the hallucination check ran on every AI answer."""
+        return all(
+            audit.get("hallucination") is not None and audit["hallucination"].result is not None
+            for _, _, audit in self.candidates
+        )
+
+    @property
     def reply(self) -> str:
-        """What the user sees and the models remember: the shown answer or
-        an honest "I don't know", in the language of the question."""
+        """What the user sees and the models remember, in the question's language:
+        the AI answer that passed, else Wikipedia's text, else "I don't know"."""
         if self.shown:
             return self.shown[1]
-        return NO_RELIABLE_ANSWER["ka" if is_georgian(self.question) else "en"]
+        language = "ka" if is_georgian(self.question) else "en"
+        why = WHY_NO_AI_ANSWER[("failed" if self.facts_checked else "unchecked", language)]
+        wiki = self.wiki_answer
+        if wiki is None:
+            return f"{why} {DONT_KNOW[language]}"
+        quote = "\n".join(f"> {line}" if line else ">" for line in wiki.text.splitlines())
+        source = f"— [{wiki.title}]({wiki.url})"
+        if wiki.english_text:
+            source += f" {TRANSLATED_NOTE}"
+        return f"{why} {FROM_WIKIPEDIA[language]}\n\n{quote}\n\n{source}"
 
 
 class ChatState(TypedDict, total=False):
@@ -166,6 +205,7 @@ class ChatState(TypedDict, total=False):
     audit: dict[str, CheckOutcome]
     answer_translation: str
     secondary_audit: dict[str, CheckOutcome]
+    wiki_answer: Passage | None
     revisions: list[str]
     original_audit: dict[str, CheckOutcome]
     review_decision: str | None  # "revise" or "accept", set by human_review
@@ -189,6 +229,7 @@ def new_question_input(question: str) -> dict[str, Any]:
         "audit": {},
         "answer_translation": "",
         "secondary_audit": {},
+        "wiki_answer": None,
         "revisions": [],
         "original_audit": {},
         "review_decision": None,
@@ -214,6 +255,7 @@ def turn_from_state(state: ChatState) -> Turn:
         audit=state.get("audit", {}),
         answer_translation=state.get("answer_translation", ""),
         secondary_audit=state.get("secondary_audit", {}),
+        wiki_answer=state.get("wiki_answer"),
         revisions=state.get("revisions", []),
         original_audit=state.get("original_audit", {}),
         revise_error=state.get("revise_error"),
@@ -396,7 +438,36 @@ def retrieve_evidence(state: ChatState) -> dict:
             update["georgian_sources"] = _georgian_sources(state, update.get("evidence", []))
         except Exception:  # noqa: BLE001
             pass
+    try:
+        update["wiki_answer"] = _wikipedia_answer(
+            state["question"], update.get("georgian_sources", []), update.get("evidence", [])
+        )
+    except Exception:  # noqa: BLE001 - then the fallback is "I don't know"
+        pass
     return update
+
+
+def _wikipedia_answer(
+    question: str, georgian: list[Passage], english: list[Passage]
+) -> Passage | None:
+    """Wikipedia's own answer, kept ready in case no AI answer passes.
+
+    A Georgian question is answered from Georgian Wikipedia when it has a
+    relevant passage; otherwise from English Wikipedia, translated by PRIMARY
+    (the original stays in `english_text`, and the reply says it is a
+    translation). An English question is answered from English Wikipedia.
+    """
+    user_agent = get_settings().wiki_user_agent
+    if is_georgian(question):
+        answer = wikipedia_answer(question, georgian, user_agent, GEORGIAN_WIKIPEDIA_API)
+        if answer is not None:
+            return answer
+        answer = wikipedia_answer(question, english, user_agent, WIKIPEDIA_API)
+        georgian_text = _to_georgian(answer.text) if answer else ""
+        if not georgian_text:
+            return answer  # better English Wikipedia than nothing
+        return replace(answer, text=georgian_text, english_text=answer.text)
+    return wikipedia_answer(question, english, user_agent, WIKIPEDIA_API)
 
 
 def _audit_answer(state: ChatState, text: str, translation: str = "") -> dict[str, CheckOutcome]:
@@ -508,11 +579,13 @@ def route_after_audit(state: ChatState) -> str:
     """Offer a revision only if NO answer passed the audit.
 
     If one answer passed, it is simply shown. Only PRIMARY can be revised, so
-    there must be a PRIMARY answer and revisions left.
+    there must be a PRIMARY answer and revisions left. If the auditor could
+    not run (e.g. its daily limit), a revision could not be checked either,
+    so none is offered.
     """
     turn = turn_from_state(state)
     revisions_left = len(turn.revisions) < MAX_REVISIONS
-    can_revise = turn.primary.ok and revisions_left
+    can_revise = turn.primary.ok and revisions_left and turn.facts_checked
     return "human_review" if turn.shown is None and can_revise else "finalize"
 
 

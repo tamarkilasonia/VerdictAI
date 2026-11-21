@@ -138,11 +138,17 @@ def revise_answer(
 # For a Georgian question, Georgian Wikipedia is searched too (with Georgian
 # keywords): Georgian topics such as a village are often missing in English.
 SEARCH_QUERY_PROMPT = (
-    "Write a short {language} Wikipedia search query (2 to 6 words) for the topic "
-    "of the user's message: the person, work, place or event it is about. Do not "
-    "answer the message. Reply with the query only.\n"
-    "Examples for 'მე როგორც ვიცი ვეფხისტყაოსანი გალაკტიონმა დაწერა': "
-    "in English -> The Knight in the Panther's Skin; in Georgian -> ვეფხისტყაოსანი"
+    "Write a short {language} Wikipedia search query (1 to 5 words) for the topic "
+    "of the user's message: the name of the person, work, place or event it is about, "
+    "as a Wikipedia article title would write it. Use ONLY names that appear in the "
+    "message: never add a name it does not contain (for example, do not guess the "
+    "author of a poem; search for the poem). Do not answer the message. Leave out "
+    "words like 'poem', 'author' or 'recipe'. Write the query in {language} only: an "
+    "English query uses English letters (translate or transliterate Georgian names). "
+    "Reply with the query only.\n"
+    "Examples: 'მე როგორც ვიცი ვეფხისტყაოსანი გალაკტიონმა დაწერა' -> in English: "
+    "The Knight in the Panther's Skin; in Georgian: ვეფხისტყაოსანი. "
+    "'„ბედნიერი ერი“ ვინ დაწერა?' -> in English: A Happy Nation; in Georgian: ბედნიერი ერი"
 )
 
 

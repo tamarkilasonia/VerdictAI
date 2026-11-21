@@ -321,14 +321,18 @@ def needs_revision(audit: dict[str, CheckOutcome]) -> bool:
 
 
 def is_acceptable(audit: dict[str, CheckOutcome]) -> bool:
-    """May this answer be shown to the user? Only if no check failed (❌).
+    """May this answer be shown to the user?
 
-    A contradicted claim always makes the hallucination check fail (see
-    align_score_with_labels), so an accepted answer has no claim that the
-    evidence contradicts. Unavailable checks (e.g. a rate limit) do not
-    reject an answer; the UI says that it could not be fully checked.
+    Only if its facts WERE checked (the hallucination check ran) and no check
+    failed (❌). A contradicted claim always makes the hallucination check fail
+    (see align_score_with_labels). An unchecked answer is not shown: when the
+    auditor hit a rate limit, Gemini's unchecked answer named the wrong author
+    of the poem "ბედნიერი ერი" (Akaki Tsereteli instead of Ilia Chavchavadze).
     """
-    return bool(audit) and not needs_revision(audit)
+    hallucination = audit.get("hallucination")
+    if hallucination is None or hallucination.result is None:
+        return False
+    return not needs_revision(audit)
 
 
 def pick_answer(audits: list[dict[str, CheckOutcome]]) -> int | None:
@@ -336,16 +340,14 @@ def pick_answer(audits: list[dict[str, CheckOutcome]]) -> int | None:
 
     audits: one audit per answer, PRIMARY first. Among the acceptable answers
     the best is the one with the fewest ⚠️ checks, then the one whose
-    hallucination check is lowest (unverified counts as worst); on a tie
+    hallucination check is lowest (an unavailable check counts as a warning); on a tie
     PRIMARY wins, because it is the stronger model.
     """
 
     def badness(index: int) -> tuple[int, float, int]:
         audit = audits[index]
-        warnings = sum(outcome.status == "warn" for outcome in audit.values())
-        hallucination = audit.get("hallucination")
-        score = hallucination.result.score if hallucination and hallucination.result else 1.0
-        return (warnings, score, index)
+        warnings = sum(outcome.status in ("warn", "unavailable") for outcome in audit.values())
+        return (warnings, audit["hallucination"].result.score, index)
 
     acceptable = [i for i, audit in enumerate(audits) if is_acceptable(audit)]
     return min(acceptable, key=badness) if acceptable else None

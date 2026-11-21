@@ -27,6 +27,12 @@ SETTINGS = Settings(
     wiki_user_agent="test",
 )
 
+@pytest.fixture(autouse=True)
+def no_real_wikipedia(monkeypatch):
+    """No test may reach the internet: Wikipedia's own answer is faked as "none"."""
+    monkeypatch.setattr(graph, "wikipedia_answer", lambda *args, **kwargs: None)
+
+
 # ------------------------------------------------------------ language check
 
 
@@ -391,3 +397,52 @@ def test_english_question_goes_to_both_unchanged(monkeypatch):
     update, sent = run_generate(monkeypatch, "Who wrote it?")
     assert sent == {"primary": "Who wrote it?", "secondary": "Who wrote it?"}
     assert update["secondary"].english_text == ""
+
+
+# ----------------------------------- Wikipedia's own answer (no AI answer passed)
+
+
+def fake_wikipedia(georgian_has_it):
+    def answer(question, passages, ua, api):
+        if api == graph.GEORGIAN_WIKIPEDIA_API:
+            return Passage("შროშა", "ka-url", "შროშა — სოფელი იმერეთში.") if georgian_has_it else None
+        return Passage("Shrosha", "en-url", "Shrosha is a village in Imereti.")
+    return answer
+
+
+def test_georgian_question_is_answered_from_georgian_wikipedia(monkeypatch):
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr(graph, "wikipedia_answer", fake_wikipedia(georgian_has_it=True))
+    answer = graph._wikipedia_answer("სად არის შროშა?", [], [])
+    assert answer.url == "ka-url" and answer.english_text == ""
+
+
+def test_without_georgian_page_english_wikipedia_is_translated(monkeypatch):
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr(graph, "wikipedia_answer", fake_wikipedia(georgian_has_it=False))
+    monkeypatch.setattr(graph, "translate_to_georgian", lambda spec, t: "შროშა იმერეთის სოფელია.")
+    answer = graph._wikipedia_answer("სად არის შროშა?", [], [])
+    assert answer.url == "en-url"
+    assert answer.text == "შროშა იმერეთის სოფელია."  # shown, marked as a translation
+    assert answer.english_text == "Shrosha is a village in Imereti."
+
+
+def test_english_question_is_answered_from_english_wikipedia(monkeypatch):
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr(graph, "wikipedia_answer", fake_wikipedia(georgian_has_it=True))
+    assert graph._wikipedia_answer("Where is Shrosha?", [], []).url == "en-url"
+
+
+
+def test_daily_limit_is_not_retried_and_explained():
+    from models import should_retry
+
+    request = httpx.Request("POST", "https://service.invalid/v1/chat/completions")
+    daily = openai.RateLimitError(
+        "Rate limit reached on tokens per day (TPD): Limit 200000, Used 199598",
+        response=httpx.Response(429, request=request),
+        body=None,
+    )
+    minute = api_error(openai.RateLimitError, 429)
+    assert should_retry(minute) and not should_retry(daily)
+    assert "Today's free limit" in friendly_error(daily, SPEC)
