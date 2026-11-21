@@ -15,9 +15,10 @@ from langchain_core.runnables import Runnable
 
 from config import ModelSpec
 
-# Cloud models usually answer in seconds; the limit only stops a stuck request
-# from freezing the app forever.
-REQUEST_TIMEOUT_SECONDS = 60
+# Cloud models usually answer in seconds (measured 0.3-10 s); the limit only
+# stops a stuck request from freezing the app. With 5 attempts a dead service
+# is reported after a few minutes at most.
+REQUEST_TIMEOUT_SECONDS = 30
 
 # Only temporary problems are worth retrying: the service could not be reached,
 # asked us to slow down (free tiers allow a few requests per minute) or was
@@ -56,12 +57,12 @@ def get_chat_model(spec: ModelSpec, *, temperature: float = 0.7, json_mode: bool
     return model.with_retry(
         retry_if_exception_type=RETRYABLE_ERRORS,
         wait_exponential_jitter=True,
-        # Waits of about 2, 4 and 8 seconds. Groq's free tier allows 8000 tokens
-        # per minute per model and one audit uses about 3300, so an audit, its
-        # re-audit and the next question can hit the limit; ~14 s is usually
-        # enough for the per-minute budget to refill (shorter waits were not).
+        # Waits of about 2, 4, 8 and 16 seconds (~30 s in total). Groq's free
+        # tier allows 8000 tokens per minute per model, and for Qwen only 1000
+        # OUTPUT tokens per minute; one audit uses about 3300 tokens. When the
+        # limit is hit, Groq said "try again in 19.44s", so ~14 s was too short.
         exponential_jitter_params={"initial": 2},
-        stop_after_attempt=4,
+        stop_after_attempt=5,
     )
 
 

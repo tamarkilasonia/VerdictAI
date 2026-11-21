@@ -12,7 +12,7 @@ from langgraph.types import Command
 
 import ui
 from audit_log import read_log
-from auditor import CheckOutcome, needs_revision
+from auditor import CheckOutcome
 from config import MAX_REVISIONS, Settings, get_settings
 from graph import Turn, build_graph, new_question_input, turn_from_state
 
@@ -86,50 +86,41 @@ def audit_strip(audit: dict[str, CheckOutcome]) -> str:
     return ui.audit_strip([(CHECK_LABELS[c], o.status) for c, o in audit.items()])
 
 
-def render_primary_column(turn: Turn) -> None:
-    """PRIMARY's (possibly revised) answer with its own audit verdict."""
-    label = turn.primary.model
-    if turn.revisions:
-        label += f" · revised {len(turn.revisions)} of {MAX_REVISIONS}"
-    st.html(f'<div class="mp-label">{ui.escape(label)}</div>')
-    st.markdown(turn.final_answer)
-    if turn.audit:
-        st.html(audit_strip(turn.audit))
-    if turn.revisions:
-        # The answer before the first revision, with the verdict that led to it.
-        with st.expander("Original answer"):
-            st.markdown(turn.original_answer)
-            st.html(audit_strip(turn.original_audit))
+def shown_audit(turn: Turn) -> dict[str, CheckOutcome]:
+    """The audit of the answer shown in the chat ({} if none is shown)."""
+    for model, text, audit in turn.candidates:
+        if (model, text) == turn.shown:
+            return audit
+    return {}
 
 
-def render_secondary_column(turn: Turn) -> None:
-    """SECONDARY's answer with its own audit verdict."""
-    st.html(f'<div class="mp-label">{ui.escape(turn.secondary.model)}</div>')
-    st.markdown(turn.secondary.text)
-    if turn.secondary_audit:
-        st.html(audit_strip(turn.secondary_audit))
+def failed_checks(audit: dict[str, CheckOutcome]) -> str:
+    return ", ".join(CHECK_LABELS[c] for c, o in audit.items() if o.status == "fail")
 
 
 def render_turn(turn: Turn, index: int) -> None:
-    """Both answers side by side, each with its own audit, so they can be compared."""
+    """ONE answer: the one that passed the audit, or an honest "I don't know".
+
+    Both answers and their analyses are in the audit panel on the right.
+    """
     render_user_bubble(turn.question, str(index))
     with st.container(key=f"msg-bot-{index}"):
-        st.html(ui.bubble_head(agreement_pill(turn)))
-        if not (turn.primary.ok and turn.secondary.ok):
-            working, failed = (
-                (turn.primary, turn.secondary) if turn.primary.ok else (turn.secondary, turn.primary)
-            )
-            st.html(f'<div class="mp-label">{ui.escape(working.model)}</div>')
-            st.markdown(turn.final_answer)
-            if turn.audit:
-                st.html(audit_strip(turn.audit))
-            st.caption(f"Only {working.model} answered. {failed.model}: {failed.error}")
+        if turn.shown is None:
+            st.html(ui.bubble_head(ui.pill("No reliable answer", "fail")))
+            st.markdown(turn.reply)
             return
-        left, right = st.columns(2, gap="medium")
-        with left:
-            render_primary_column(turn)
-        with right:
-            render_secondary_column(turn)
+        model, text = turn.shown
+        audit = shown_audit(turn)
+        # Agreement is part of the analysis (panel), not of the one answer shown.
+        pills = [ui.pill(f"Fact-checked · {model}", "good")]
+        if turn.revisions and model == turn.primary.model:
+            pills.append(ui.pill(f"Revised after audit · {len(turn.revisions)} of {MAX_REVISIONS}", "info"))
+        if any(outcome.status == "unavailable" for outcome in audit.values()):
+            # Not hidden (a rate limit is not a wrong fact), but said openly.
+            pills.append(ui.pill("Not fully checked", "warn"))
+        st.html(ui.bubble_head(*pills))
+        st.markdown(text)
+        st.html(audit_strip(audit))
         if turn.agreement_error:
             st.caption(turn.agreement_error)
 
@@ -141,14 +132,14 @@ def render_review_controls(turn: Turn) -> str | None:
     remaining = MAX_REVISIONS - len(turn.revisions)
     st.html(
         ui.callout(
-            f"The audit found a serious problem with the {turn.primary.model} answer. Ask it "
-            f"to fix the answer using the audit and the evidence? ({remaining} revision(s) left)"
+            f"Neither answer passed the fact check. Ask {turn.primary.model} to fix its "
+            f"answer using the audit and the evidence? ({remaining} revision(s) left)"
         )
     )
-    revise_column, keep_column, _ = st.columns([1.2, 1.2, 2])
+    revise_column, keep_column, _ = st.columns([1.2, 1.4, 2])
     if revise_column.button("Revise answer", type="primary", icon=":material/edit:", width="stretch"):
         return "revise"
-    if keep_column.button("Keep this answer", width="stretch"):
+    if keep_column.button("Keep “I don't know”", width="stretch"):
         return "accept"
     return None
 
@@ -157,33 +148,70 @@ def render_review_controls(turn: Turn) -> str | None:
 
 
 def render_comparison(turn: Turn) -> None:
-    """Every check for both answers, side by side: which answer holds up better?"""
-    audits = [(turn.final_model, turn.audit)]
-    if turn.secondary_audit:
-        audits.append((turn.secondary.model, turn.secondary_audit))
+    """Every check for every answer, side by side: which answer holds up?"""
+    candidates = turn.candidates
     rows = [
         (
             CHECK_LABELS[check],
             [
                 (audit[check].status, score_of(audit[check])) if check in audit else ("unavailable", None)
-                for _, audit in audits
+                for _, _, audit in candidates
             ],
         )
         for check in CHECK_LABELS
     ]
+    shown = turn.shown[0] if turn.shown else None
+    verdict = (
+        f"Shown in the chat: <b>{ui.escape(shown)}</b>"
+        if shown
+        else "<b>No answer passed</b>: the chat says “I don't know”."
+    )
     st.html(
         '<div class="mp-section">Comparison</div>'
-        + ui.comparison_table([model for model, _ in audits], rows)
+        + ui.comparison_table([model for model, _, _ in candidates], rows)
         + '<div class="mp-note">Hallucination, bias, toxicity: lower is better. '
-        "Intent alignment: higher is better.</div>"
+        "Intent alignment: higher is better. An answer is shown only if no check is "
+        f"Serious.</div><div class=\"mp-muted\" style=\"margin-top:8px\">{verdict}</div>"
+        f'<div style="margin-top:6px">{agreement_pill(turn)}</div>'
     )
+
+
+def render_answers(turn: Turn) -> None:
+    """Both answers in full, including the ones hidden from the chat."""
+    st.html('<div class="mp-section">Both answers</div>')
+    for model, text, audit in turn.candidates:
+        if turn.shown == (model, text):
+            label = f"{model} · shown in the chat"
+        else:
+            # Hidden because a check failed, or because both passed and the other
+            # had fewer warnings / unverified details (auditor.pick_answer).
+            reason = failed_checks(audit) or "both passed, the other was checked better"
+            label = f"{model} · hidden: {reason}"
+        with st.expander(label):
+            st.markdown(text)
+            st.html(audit_strip(audit))
+            if model == turn.secondary.model and turn.secondary.english_text:
+                # Georgian question: SECONDARY answered in English (checked as is),
+                # PRIMARY translated it into Georgian for reading.
+                st.caption(f"{model} answered in English; Gemini translated it. Original:")
+                st.markdown(turn.secondary.english_text)
+    if turn.revisions:
+        with st.expander(f"{turn.primary.model} · original answer, before revising"):
+            st.markdown(turn.original_answer)
+            st.html(audit_strip(turn.original_audit))
 
 
 def render_issues(turn: Turn) -> None:
     """Problems found in either answer, labelled with the model that wrote it."""
-    audits = [(turn.final_model, turn.audit), (turn.secondary.model, turn.secondary_audit)]
+    audits = [(model, audit) for model, _, audit in turn.candidates]
     cards = [
-        ui.issue_card(f"{CHECK_LABELS[check]} · {model}", outcome.status, issue.quote, issue.reason)
+        ui.issue_card(
+            f"{CHECK_LABELS[check]} · {model}",
+            # "Not in the evidence" is not a false fact: show it as a potential issue.
+            "warn" if issue.reason.upper().startswith("UNVERIFIED") else outcome.status,
+            issue.quote,
+            issue.reason,
+        )
         for model, audit in audits
         for check, outcome in audit.items()
         if outcome.result and outcome.status in ("warn", "fail")
@@ -257,13 +285,10 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
         if turn.answer_translation:
             # The evidence was ranked against this translation, and the quotes
             # in "Issues found" come from it.
-            with st.expander("Georgian answers: checked in English translation"):
+            with st.expander(f"{turn.primary.model} answer, as checked (English translation)"):
                 st.markdown(turn.answer_translation)
         render_comparison(turn)
-
-        if needs_revision(turn.audit) and len(turn.revisions) >= MAX_REVISIONS:
-            st.html(ui.callout(f"Still failing after {MAX_REVISIONS} revisions: treat with caution.", "fail"))
-
+        render_answers(turn)
         render_issues(turn)
         render_evidence(turn)
         render_details(turn, settings)

@@ -354,3 +354,40 @@ def test_georgian_only_page_is_translated_for_the_auditor(monkeypatch):
         "[Berlin Wall] fell 1989",
         "[შროშა, Georgian Wikipedia, translated] It fell in 1989.",
     ]
+
+
+# ------------------------- SECONDARY answers Georgian questions in English
+
+
+def run_generate(monkeypatch, question):
+    sent = {}
+
+    def fake_ask_both(primary, secondary, messages, secondary_messages=None):
+        sent["primary"] = messages[-1].content
+        sent["secondary"] = (secondary_messages or messages)[-1].content
+        english = sent["secondary"] if secondary_messages else None
+        return (
+            ModelAnswer("p", text="პირველის პასუხი"),
+            ModelAnswer("s", text="Shota Rustaveli wrote it." if english else "answer"),
+        )
+
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr(graph, "ask_both", fake_ask_both)
+    monkeypatch.setattr(graph, "translate_to_english", lambda spec, t: "Who wrote it?")
+    monkeypatch.setattr(graph, "translate_to_georgian", lambda spec, t: "შოთა რუსთაველმა დაწერა.")
+    update = graph.generate_answers({"question": question, "messages": [], "latency": {}})
+    return update, sent
+
+
+def test_georgian_question_goes_to_secondary_in_english(monkeypatch):
+    update, sent = run_generate(monkeypatch, "ვინ დაწერა ვეფხისტყაოსანი?")
+    assert sent == {"primary": "ვინ დაწერა ვეფხისტყაოსანი?", "secondary": "Who wrote it?"}
+    secondary = update["secondary"]
+    assert secondary.text == "შოთა რუსთაველმა დაწერა."  # shown in Georgian
+    assert secondary.english_text == "Shota Rustaveli wrote it."  # audited as is
+
+
+def test_english_question_goes_to_both_unchanged(monkeypatch):
+    update, sent = run_generate(monkeypatch, "Who wrote it?")
+    assert sent == {"primary": "Who wrote it?", "secondary": "Who wrote it?"}
+    assert update["secondary"].english_text == ""

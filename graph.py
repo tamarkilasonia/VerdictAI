@@ -29,7 +29,7 @@ import operator
 from concurrent.futures import ThreadPoolExecutor
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import wraps
 from typing import Annotated, Any, TypedDict
 
@@ -51,17 +51,28 @@ from answers import (
     make_search_query,
     revise_answer,
     translate_to_english,
+    translate_to_georgian,
 )
 from auditor import (
     CheckOutcome,
     CheckResult,
     Issue,
     describe_problems,
-    needs_revision,
+    pick_answer,
     run_audit,
 )
 from config import MAX_REVISIONS, get_settings
 from retrieval import Passage, get_evidence, get_georgian_sources, is_georgian
+
+
+# Shown instead of an answer when both answers failed the audit: a wrong
+# answer is worse than none.
+NO_RELIABLE_ANSWER = {
+    "en": "I don't know a reliable answer to this: both AI answers failed the fact "
+    "check (see the analysis on the right).",
+    "ka": "ამ კითხვაზე სანდო პასუხი არ ვიცი: ორივე AI-ის პასუხმა შემოწმება ვერ "
+    "გაიარა (ანალიზი იხილეთ მარჯვნივ).",
+}
 
 
 @dataclass
@@ -99,6 +110,34 @@ class Turn:
     @property
     def final_model(self) -> str:
         return self.primary.model if self.primary.ok else self.secondary.model
+
+    @property
+    def candidates(self) -> list[tuple[str, str, dict[str, CheckOutcome]]]:
+        """Every answer that exists, as (model, text, audit); PRIMARY first."""
+        if not self.primary.ok:  # then `audit` belongs to SECONDARY's answer
+            return [(self.secondary.model, self.secondary.text, self.audit)] if self.secondary.ok else []
+        answers = [(self.primary.model, self.final_answer, self.audit)]
+        if self.secondary.ok:
+            answers.append((self.secondary.model, self.secondary.text, self.secondary_audit))
+        return answers
+
+    @property
+    def shown(self) -> tuple[str, str] | None:
+        """(model, text) of the ONE answer shown in the chat, or None.
+
+        Only an answer that passed the audit is shown; see auditor.pick_answer.
+        """
+        candidates = self.candidates
+        index = pick_answer([audit for _, _, audit in candidates])
+        return None if index is None else candidates[index][:2]
+
+    @property
+    def reply(self) -> str:
+        """What the user sees and the models remember: the shown answer or
+        an honest "I don't know", in the language of the question."""
+        if self.shown:
+            return self.shown[1]
+        return NO_RELIABLE_ANSWER["ka" if is_georgian(self.question) else "en"]
 
 
 class ChatState(TypedDict, total=False):
@@ -238,7 +277,21 @@ def generate_answers(state: ChatState) -> dict:
     messages = build_messages(
         state.get("messages", []), state["question"], settings.history_messages
     )
-    primary, secondary = ask_both(settings.primary, settings.secondary, messages)
+    # SECONDARY (Qwen) writes poor Georgian: asked directly, it named a made-up
+    # author for "The Knight in the Panther's Skin" and garbled names; asked in
+    # English, it answered correctly. So a Georgian question goes to it in
+    # English, and PRIMARY (Gemini) translates its answer back into Georgian.
+    english_question = _translation(state["question"])
+    secondary_messages = (
+        [*messages[:-1], HumanMessage(english_question)] if english_question else None
+    )
+    primary, secondary = ask_both(
+        settings.primary, settings.secondary, messages, secondary_messages
+    )
+    if secondary_messages and secondary.ok:
+        georgian = _to_georgian(secondary.text)
+        if georgian:  # if translating fails, the English answer is shown as it is
+            secondary = replace(secondary, text=georgian, english_text=secondary.text)
     update: dict[str, Any] = {"primary": primary, "secondary": secondary}
     if not primary.ok and not secondary.ok:
         update["error"] = f"No model could answer.\n\n- {primary.error}\n- {secondary.error}"
@@ -279,6 +332,14 @@ def _translation(text: str) -> str:
     try:
         return translate_to_english(get_settings().primary, text)
     except Exception:  # noqa: BLE001 - a failed translation must not stop the turn
+        return ""
+
+
+def _to_georgian(text: str) -> str:
+    """PRIMARY's Georgian translation of an English text; "" if that fails."""
+    try:
+        return translate_to_georgian(get_settings().primary, text)
+    except Exception:  # noqa: BLE001
         return ""
 
 
@@ -357,7 +418,7 @@ def audit(state: ChatState) -> dict:
     still caught 3 times out of 3.
 
     SECONDARY is audited only once: a revision changes PRIMARY's answer, not
-    SECONDARY's. Only PRIMARY's audit can pause the graph for a revision.
+    SECONDARY's. The audits decide which answer the user sees (Turn.shown).
     """
     answer = _final_answer(state)
     # revise() clears the translation, so a revised answer is translated anew.
@@ -369,7 +430,12 @@ def audit(state: ChatState) -> dict:
     # Both audits at the same time: the user waits for one, not for two.
     with ThreadPoolExecutor(max_workers=2) as pool:
         primary_job = pool.submit(_audit_answer, state, answer, translation)
-        secondary_job = pool.submit(_audit_answer, state, secondary.text) if audit_secondary else None
+        # SECONDARY's original English answer is audited directly when it exists.
+        secondary_job = (
+            pool.submit(_audit_answer, state, secondary.text, secondary.english_text)
+            if audit_secondary
+            else None
+        )
         update: dict[str, Any] = {
             "audit": primary_job.result(),
             "answer_translation": translation or "",
@@ -423,9 +489,9 @@ def finalize(state: ChatState) -> dict:
     turn = turn_from_state(state)
     append_entry(build_entry(turn, get_settings(), _thread_id()))
     return {
-        # The models remember the FINAL answer, so follow-up questions build
-        # on the corrected version.
-        "messages": [HumanMessage(turn.question), AIMessage(turn.final_answer)],
+        # The models remember what the user saw (the checked answer, or "I
+        # don't know"), so follow-up questions never build on a wrong answer.
+        "messages": [HumanMessage(turn.question), AIMessage(turn.reply)],
         "turns": [turn],
     }
 
@@ -439,9 +505,15 @@ def route_after_answers(state: ChatState) -> str:
 
 
 def route_after_audit(state: ChatState) -> str:
-    """Offer a revision only if a check failed and revisions are left."""
-    revisions_left = len(state.get("revisions", [])) < MAX_REVISIONS
-    return "human_review" if needs_revision(state["audit"]) and revisions_left else "finalize"
+    """Offer a revision only if NO answer passed the audit.
+
+    If one answer passed, it is simply shown. Only PRIMARY can be revised, so
+    there must be a PRIMARY answer and revisions left.
+    """
+    turn = turn_from_state(state)
+    revisions_left = len(turn.revisions) < MAX_REVISIONS
+    can_revise = turn.primary.ok and revisions_left
+    return "human_review" if turn.shown is None and can_revise else "finalize"
 
 
 def route_after_review(state: ChatState) -> str:

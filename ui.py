@@ -57,6 +57,7 @@ h1, h2, h3 { letter-spacing: -0.01em; }
 .mp-pill-good { background: #e7f6ee; color: #1f7a45; }
 .mp-pill-warn { background: #fdf3e1; color: #9a5f00; }
 .mp-pill-info { background: #e8eefc; color: #2f58b8; }
+.mp-pill-fail { background: #fdeaea; color: #8f1f1f; }
 
 /* ---------- audit strip under each answer ---------- */
 .mp-strip { display: flex; flex-wrap: wrap; gap: 14px; font-size: 0.78rem; color: #6b7385;

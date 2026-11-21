@@ -33,6 +33,9 @@ class ModelAnswer:
     text: str | None = None
     error: str | None = None
     seconds: float = 0.0
+    # SECONDARY on a Georgian question answers in English (see graph.py);
+    # then `text` is Gemini's Georgian translation and this is the original.
+    english_text: str = ""
 
     @property
     def ok(self) -> bool:
@@ -73,16 +76,21 @@ def _ask_safely(spec: ModelSpec, messages: list[BaseMessage]) -> ModelAnswer:
 
 
 def ask_both(
-    primary: ModelSpec, secondary: ModelSpec, messages: list[BaseMessage]
+    primary: ModelSpec,
+    secondary: ModelSpec,
+    messages: list[BaseMessage],
+    secondary_messages: list[BaseMessage] | None = None,
 ) -> tuple[ModelAnswer, ModelAnswer]:
-    """Ask both models the same messages at the same time.
+    """Ask both models at the same time.
 
+    `secondary_messages` lets SECONDARY get a different version of the
+    conversation (the question in English, for Georgian questions).
     Each call mostly waits for the AI service, so two threads finish in
     roughly the time of the slower model instead of the sum of both.
     """
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(_ask_safely, primary, messages)
-        second = pool.submit(_ask_safely, secondary, messages)
+        second = pool.submit(_ask_safely, secondary, secondary_messages or messages)
         return first.result(), second.result()
 
 
@@ -155,7 +163,17 @@ TRANSLATE_PROMPT = (
 
 def translate_to_english(spec: ModelSpec, text: str) -> str:
     """English version of a (Georgian) text."""
-    messages = [SystemMessage(TRANSLATE_PROMPT), HumanMessage(text)]
+    return _translate(spec, text, "English")
+
+
+def translate_to_georgian(spec: ModelSpec, text: str) -> str:
+    """Georgian version of an English text (SECONDARY's answer, see graph.py)."""
+    return _translate(spec, text, "Georgian")
+
+
+def _translate(spec: ModelSpec, text: str, language: str) -> str:
+    prompt = TRANSLATE_PROMPT.replace("English", language)
+    messages = [SystemMessage(prompt), HumanMessage(text)]
     # temperature 0: a translation should not be creative.
     return _unquote(ask_model(spec, messages, temperature=0.0))
 

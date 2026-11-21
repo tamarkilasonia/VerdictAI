@@ -86,17 +86,60 @@ def test_placeholder_user_agent_falls_back_to_default(monkeypatch):
 # ------------------------------------------------------------------ routing
 
 
-def test_failed_audit_goes_to_human_review():
-    assert route_after_audit({"audit": failing_audit(), "revisions": []}) == "human_review"
+def routing_state(primary_audit, secondary_audit, revisions=()):
+    return {
+        "question": "When did the Berlin Wall fall?",
+        "primary": ModelAnswer("p", text="In 1975."),
+        "secondary": ModelAnswer("s", text="In 1989."),
+        "audit": primary_audit,
+        "secondary_audit": secondary_audit,
+        "revisions": list(revisions),
+    }
 
 
-def test_passed_audit_is_finalized():
-    assert route_after_audit({"audit": passing_audit(), "revisions": []}) == "finalize"
+def test_review_is_offered_only_when_no_answer_passed():
+    state = routing_state(failing_audit(), failing_audit())
+    assert route_after_audit(state) == "human_review"
+
+
+def test_a_passing_answer_is_shown_without_review():
+    # PRIMARY failed but SECONDARY passed: show SECONDARY, nothing to revise.
+    assert route_after_audit(routing_state(failing_audit(), passing_audit())) == "finalize"
+    assert route_after_audit(routing_state(passing_audit(), failing_audit())) == "finalize"
 
 
 def test_no_more_review_after_max_revisions():
-    state = {"audit": failing_audit(), "revisions": ["r"] * MAX_REVISIONS}
+    state = routing_state(failing_audit(), failing_audit(), ["r"] * MAX_REVISIONS)
     assert route_after_audit(state) == "finalize"
+
+
+# ---------------------------------------------- which ONE answer is shown
+
+
+def test_both_pass_shows_the_primary_answer():
+    turn = Turn("When did the Berlin Wall fall?", ModelAnswer("p", text="1989."),
+                ModelAnswer("s", text="In 1989."), audit=passing_audit(),
+                secondary_audit=passing_audit())
+    assert turn.shown == ("p", "1989.")
+
+
+def test_failing_answer_is_hidden_and_the_other_shown():
+    turn = Turn("When did the Berlin Wall fall?", ModelAnswer("p", text="In 1975."),
+                ModelAnswer("s", text="In 1989."), audit=failing_audit(),
+                secondary_audit=passing_audit())
+    assert turn.shown == ("s", "In 1989.")
+    assert turn.reply == "In 1989."
+
+
+def test_both_failing_gives_an_honest_dont_know_in_the_question_language():
+    english = Turn("When did the Berlin Wall fall?", ModelAnswer("p", text="1975."),
+                   ModelAnswer("s", text="1980."), audit=failing_audit(),
+                   secondary_audit=failing_audit())
+    georgian = Turn("როდის დაეცა ბერლინის კედელი?", ModelAnswer("p", text="1975."),
+                    ModelAnswer("s", text="1980."), audit=failing_audit(),
+                    secondary_audit=failing_audit())
+    assert english.shown is None and english.reply.startswith("I don't know")
+    assert georgian.shown is None and georgian.reply.startswith("ამ კითხვაზე სანდო პასუხი არ ვიცი")
 
 
 def test_review_decision_routes():
