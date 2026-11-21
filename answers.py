@@ -8,12 +8,16 @@ from dataclasses import dataclass
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
+from config import ModelSpec
 from models import friendly_error, get_chat_model, reply_text
 
-# Small models invent facts easily. Telling them it is fine to say "I'm not
-# sure" reduces made-up details, which makes the later audit more meaningful.
+# Telling the model it is fine to say "I'm not sure" reduces made-up details,
+# which makes the later audit more meaningful. The language rule keeps English
+# questions in English and lets Georgian questions get Georgian answers.
 SYSTEM_PROMPT = (
     "You are a helpful and factual assistant. "
+    "Always answer in the same language as the user's last message "
+    "(for example English or Georgian). "
     "Answer the user's question clearly and concisely, in a few sentences "
     "unless more detail is asked for. "
     "If you are not sure about a fact, say so instead of guessing. "
@@ -40,63 +44,63 @@ def build_messages(
 ) -> list[BaseMessage]:
     """System prompt + the last `max_history` chat messages + the new question.
 
-    Only recent history is sent so the prompt cannot grow without limit
-    (small models also get confused by very long prompts).
+    Only recent history is sent so the prompt cannot grow without limit.
     """
     recent = history[-max_history:] if max_history > 0 else []
     return [SystemMessage(SYSTEM_PROMPT), *recent, HumanMessage(question)]
 
 
-def ask_model(model_name: str, messages: list[BaseMessage]) -> str:
+def ask_model(spec: ModelSpec, messages: list[BaseMessage], temperature: float = 0.7) -> str:
     """Send the messages to one model and return its answer as plain text."""
-    return reply_text(get_chat_model(model_name).invoke(messages))
+    return reply_text(get_chat_model(spec, temperature=temperature).invoke(messages))
 
 
-def _ask_safely(model_name: str, messages: list[BaseMessage]) -> ModelAnswer:
+def _ask_safely(spec: ModelSpec, messages: list[BaseMessage]) -> ModelAnswer:
     """Like ask_model, but never raises: a failure becomes an error message.
 
     This is what lets one model fail without taking the other one down.
     """
     start = time.perf_counter()
     try:
-        text = ask_model(model_name, messages)
-        return ModelAnswer(model_name, text=text, seconds=time.perf_counter() - start)
+        text = ask_model(spec, messages)
+        return ModelAnswer(spec.name, text=text, seconds=time.perf_counter() - start)
     except Exception as error:  # noqa: BLE001 - any failure is reported, not raised
         return ModelAnswer(
-            model_name,
-            error=friendly_error(error, model_name),
+            spec.name,
+            error=friendly_error(error, spec),
             seconds=time.perf_counter() - start,
         )
 
 
 def ask_both(
-    primary_model: str, secondary_model: str, messages: list[BaseMessage]
+    primary: ModelSpec, secondary: ModelSpec, messages: list[BaseMessage]
 ) -> tuple[ModelAnswer, ModelAnswer]:
     """Ask both models the same messages at the same time.
 
-    Each call mostly waits for the model server, so two threads finish in
+    Each call mostly waits for the AI service, so two threads finish in
     roughly the time of the slower model instead of the sum of both.
     """
     with ThreadPoolExecutor(max_workers=2) as pool:
-        primary = pool.submit(_ask_safely, primary_model, messages)
-        secondary = pool.submit(_ask_safely, secondary_model, messages)
-        return primary.result(), secondary.result()
+        first = pool.submit(_ask_safely, primary, messages)
+        second = pool.submit(_ask_safely, secondary, messages)
+        return first.result(), second.result()
 
 
 # The reviser gets the failed answer plus the audit's findings and the evidence.
-# Saying "only the corrected answer" stops small models from writing
+# Saying "only the corrected answer" stops models from writing
 # "Here is the revised answer:" or talking about the audit itself.
 REVISE_PROMPT = (
     "You are revising an answer that failed an automatic quality audit. "
     "Rewrite the ANSWER so that it fixes every PROBLEM listed. "
     "Use the EVIDENCE for facts. If the evidence does not support a claim, "
     "remove it or say that you are not sure. Keep the parts that were correct. "
+    "Write in the same language as the QUESTION. "
     "Reply with the corrected answer only: no introduction, and do not mention the audit."
 )
 
 
 def revise_answer(
-    model_name: str,
+    spec: ModelSpec,
     history: list[BaseMessage],
     question: str,
     answer: str,
@@ -115,4 +119,27 @@ def revise_answer(
         f"PROBLEMS:\n{problems_text}\n\nEVIDENCE:\n{evidence_text}"
     )
     messages = [SystemMessage(REVISE_PROMPT), *history, HumanMessage(request)]
-    return _ask_safely(model_name, messages)
+    return _ask_safely(spec, messages)
+
+
+# Georgian text is translated into English twice per question, by PRIMARY
+# (Gemini), which knows Georgian well:
+# - the question, because English Wikipedia is far richer than Georgian
+#   Wikipedia (a test question like "who discovered penicillin" found nothing there);
+# - the answer, because the auditor misreads Georgian (see graph.audit).
+TRANSLATE_PROMPT = (
+    "Translate the user's text into English. Keep every name, date and number "
+    "exactly as written. Reply with the English translation only."
+)
+
+
+def translate_to_english(spec: ModelSpec, text: str) -> str:
+    """English version of a (Georgian) text."""
+    messages = [SystemMessage(TRANSLATE_PROMPT), HumanMessage(text)]
+    # temperature 0: a translation should not be creative.
+    english = ask_model(spec, messages, temperature=0.0).strip()
+    # Models sometimes wrap the whole translation in quotes. Remove only such a
+    # pair: '"Mona Lisa" was painted by...' must keep its opening quote.
+    if len(english) > 1 and english[0] == english[-1] == '"':
+        english = english[1:-1].strip()
+    return english

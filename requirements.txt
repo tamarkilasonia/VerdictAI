@@ -5,13 +5,14 @@ streamlit>=1.40
 
 # LLM workflow and model clients
 langchain>=1.0
-langchain-ollama>=1.0     # LangChain integration for a local Ollama server
+langchain-openai>=1.0     # OpenAI-compatible client: reaches both Gemini and Groq
 langgraph>=1.0
 
 # Structured outputs
 pydantic>=2.7
 
-# Local, free embeddings (all-MiniLM-L6-v2). Also installs PyTorch.
+# Local, free, multilingual embeddings (paraphrase-multilingual-MiniLM-L12-v2).
+# Also installs PyTorch.
 sentence-transformers>=3.0
 
 # Wikipedia API and .env loading

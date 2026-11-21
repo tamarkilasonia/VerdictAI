@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from config import LOG_PATH, Settings
+from retrieval import is_georgian
 
 if TYPE_CHECKING:  # only for type hints; avoids a circular import with graph.py
     from graph import Turn
@@ -29,9 +30,9 @@ def _timestamp() -> str:
 
 def _models(settings: Settings) -> dict[str, str]:
     return {
-        "primary": settings.primary_model,
-        "secondary": settings.secondary_model,
-        "auditor": settings.auditor_model,
+        "primary": settings.primary.name,
+        "secondary": settings.secondary.name,
+        "auditor": settings.auditor.name,
     }
 
 
@@ -61,10 +62,13 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
         "timestamp": _timestamp(),
         "thread_id": thread_id,
         "question": turn.question,
+        "language": "ka" if is_georgian(turn.question) else "en",
         "models": _models(settings),
         "answers": {"primary": turn.primary.text, "secondary": turn.secondary.text},
         "final_answer": turn.final_answer,
         "agreement_score": turn.agreement.score if turn.agreement else None,
+        "search_query": turn.search_query,
+        "answer_translation": turn.answer_translation or None,
         "evidence_urls": sorted({passage.url for passage in turn.evidence}),
         "audit_scores": _scores(turn.audit),
         "original_audit_scores": _scores(turn.original_audit) if turn.revisions else None,

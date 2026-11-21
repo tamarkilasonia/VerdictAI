@@ -7,17 +7,14 @@ from agreement import Agreement
 from answers import ModelAnswer
 from audit_log import append_entry, build_entry
 from auditor import CheckOutcome, CheckResult
-from config import MAX_REVISIONS, Settings
+from config import MAX_REVISIONS, ModelSpec, Settings
 from graph import Turn, route_after_audit, route_after_review, route_after_revise
 from retrieval import Passage
 
 SETTINGS = Settings(
-    model_provider="ollama",
-    model_base_url="http://localhost:11434",
-    model_api_key="super-secret-key",
-    primary_model="p",
-    secondary_model="s",
-    auditor_model="a",
+    primary=ModelSpec("p", "https://gemini.invalid", "super-secret-key"),
+    secondary=ModelSpec("s", "https://groq.invalid", "other-secret-key"),
+    auditor=ModelSpec("a", "https://groq.invalid", "other-secret-key"),
     agreement_threshold=0.8,
     history_messages=6,
     wiki_user_agent="test",
@@ -70,11 +67,14 @@ def test_log_never_contains_the_api_key(tmp_path):
     assert "super-secret-key" not in path.read_text(encoding="utf-8")
 
 
-def test_settings_repr_hides_the_api_key():
-    assert "super-secret-key" not in repr(SETTINGS)
+def test_settings_repr_hides_the_api_keys():
+    text = repr(SETTINGS)
+    assert "super-secret-key" not in text and "other-secret-key" not in text
 
 
 def test_placeholder_user_agent_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("PRIMARY_API_KEY", "k1")
+    monkeypatch.setenv("SECONDARY_API_KEY", "k2")
     monkeypatch.setenv("WIKI_USER_AGENT", "ModelProof (contact: <your contact>)")
     config.get_settings.cache_clear()
     try:

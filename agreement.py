@@ -13,9 +13,12 @@ from functools import lru_cache
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-# Small (~90 MB), fast on a laptop CPU, free and runs locally.
-# Trained on English; texts longer than ~256 tokens are cut off.
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# Multilingual (50+ languages, including Georgian), ~470 MB, free and local.
+# The English-only all-MiniLM-L6-v2 scored a Georgian sentence and its English
+# translation at only 0.21 (it saw letters, not meaning); this model gives 0.59
+# while unrelated pairs stay around 0.2, and English results are unchanged.
+# Texts longer than ~128 tokens are cut off.
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
 @dataclass

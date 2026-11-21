@@ -43,7 +43,7 @@ from langgraph.types import interrupt
 
 from agreement import Agreement, compare_answers
 from audit_log import append_entry, build_entry, build_failure_entry
-from answers import ModelAnswer, ask_both, build_messages, revise_answer
+from answers import ModelAnswer, ask_both, build_messages, revise_answer, translate_to_english
 from auditor import (
     CheckOutcome,
     CheckResult,
@@ -53,7 +53,7 @@ from auditor import (
     run_audit,
 )
 from config import MAX_REVISIONS, get_settings
-from retrieval import Passage, get_evidence
+from retrieval import Passage, get_evidence, is_georgian
 
 
 @dataclass
@@ -67,7 +67,9 @@ class Turn:
     agreement_error: str | None = None
     evidence: list[Passage] = field(default_factory=list)
     evidence_error: str | None = None
+    search_query: str = ""  # what Wikipedia was searched for (English)
     audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of the final answer
+    answer_translation: str = ""  # English version of a Georgian answer (ranked + audited)
     revisions: list[str] = field(default_factory=list)  # corrected answers, oldest first
     original_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # before revising
     revise_error: str | None = None
@@ -110,7 +112,9 @@ class ChatState(TypedDict, total=False):
     agreement_error: str | None
     evidence: list[Passage]
     evidence_error: str | None
+    search_query: str
     audit: dict[str, CheckOutcome]
+    answer_translation: str
     revisions: list[str]
     original_audit: dict[str, CheckOutcome]
     review_decision: str | None  # "revise" or "accept", set by human_review
@@ -129,7 +133,9 @@ def new_question_input(question: str) -> dict[str, Any]:
         "agreement_error": None,
         "evidence": [],
         "evidence_error": None,
+        "search_query": "",
         "audit": {},
+        "answer_translation": "",
         "revisions": [],
         "original_audit": {},
         "review_decision": None,
@@ -150,7 +156,9 @@ def turn_from_state(state: ChatState) -> Turn:
         agreement_error=state.get("agreement_error"),
         evidence=state.get("evidence", []),
         evidence_error=state.get("evidence_error"),
+        search_query=state.get("search_query", ""),
         audit=state.get("audit", {}),
+        answer_translation=state.get("answer_translation", ""),
         revisions=state.get("revisions", []),
         original_audit=state.get("original_audit", {}),
         revise_error=state.get("revise_error"),
@@ -206,7 +214,7 @@ def generate_answers(state: ChatState) -> dict:
     messages = build_messages(
         state.get("messages", []), state["question"], settings.history_messages
     )
-    primary, secondary = ask_both(settings.primary_model, settings.secondary_model, messages)
+    primary, secondary = ask_both(settings.primary, settings.secondary, messages)
     update: dict[str, Any] = {"primary": primary, "secondary": secondary}
     if not primary.ok and not secondary.ok:
         update["error"] = f"No model could answer.\n\n- {primary.error}\n- {secondary.error}"
@@ -236,27 +244,60 @@ def compare(state: ChatState) -> dict:
         return {"agreement_error": f"Agreement check unavailable: {error}"}
 
 
+def _translation(text: str) -> str:
+    """PRIMARY's English translation of a Georgian text.
+
+    Returns "" if the text is already English, or if the translation failed
+    (e.g. rate limit): the caller then simply uses the original text.
+    """
+    if not is_georgian(text):
+        return ""
+    try:
+        return translate_to_english(get_settings().primary, text)
+    except Exception:  # noqa: BLE001 - a failed translation must not stop the turn
+        return ""
+
+
 @timed("evidence")
 def retrieve_evidence(state: ChatState) -> dict:
-    """Find Wikipedia passages that can confirm or contradict the final answer."""
+    """Find Wikipedia passages that can confirm or contradict the final answer.
+
+    Georgian is translated into English first: English Wikipedia is much
+    richer, and English passages are ranked more precisely against an English
+    answer than against a Georgian one. The answer's translation is kept
+    for the audit too, so it is made only once.
+    """
+    answer = _final_answer(state)
+    query = _translation(state["question"]) or state["question"]
+    translation = _translation(answer)
+    update: dict[str, Any] = {"search_query": query, "answer_translation": translation}
     try:
-        evidence = get_evidence(
-            state["question"], _final_answer(state), get_settings().wiki_user_agent
-        )
-        return {"evidence": evidence}
+        evidence = get_evidence(query, translation or answer, get_settings().wiki_user_agent)
+        return {**update, "evidence": evidence}
     # No internet, Wikipedia down, timeout...: the audit simply continues
     # without evidence, and the UI says so.
     except Exception as error:  # noqa: BLE001
-        return {"evidence_error": f"Wikipedia unavailable ({type(error).__name__}); checked without evidence."}
+        return {**update, "evidence_error": f"Wikipedia unavailable ({type(error).__name__}); checked without evidence."}
 
 
 @timed("audit")
 def audit(state: ChatState) -> dict:
-    """Run the four checks on the final (possibly revised) answer, in parallel."""
+    """Run the four checks on the final (possibly revised) answer, in parallel.
+
+    A Georgian answer is audited in its English translation, because the
+    auditor model misreads Georgian: in tests it read "შოტლანდიელმა" (Scottish)
+    as "Dutch" and flagged a correct answer as contradicted, 3 times out of 3.
+    With the translation the false alarm was gone, and a wrong answer was
+    still caught 3 times out of 3.
+    """
+    answer = _final_answer(state)
+    # revise() clears the translation, so a revised answer is translated anew.
+    translation = state.get("answer_translation") or _translation(answer)
+    question = state.get("search_query") or state["question"]  # English if translated
     result = run_audit(
-        state["question"], _final_answer(state), _recent_history(state), _evidence_texts(state)
+        question, translation or answer, _recent_history(state), _evidence_texts(state)
     )
-    return {"audit": result}
+    return {"audit": result, "answer_translation": translation}
 
 
 def human_review(state: ChatState) -> dict:
@@ -278,7 +319,7 @@ def human_review(state: ChatState) -> dict:
 def revise(state: ChatState) -> dict:
     """Ask PRIMARY to fix the answer using the audit's problems and the evidence."""
     revised = revise_answer(
-        get_settings().primary_model,
+        get_settings().primary,
         _recent_history(state),
         state["question"],
         _final_answer(state),
@@ -291,6 +332,7 @@ def revise(state: ChatState) -> dict:
     update: dict[str, Any] = {
         "revisions": state.get("revisions", []) + [revised.text],
         "revise_error": None,
+        "answer_translation": "",  # belonged to the old answer; audit() makes a new one
     }
     if not state.get("revisions"):  # first revision: keep the original verdict
         update["original_audit"] = state["audit"]

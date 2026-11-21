@@ -179,6 +179,9 @@ def render_issues(audit: dict[str, CheckOutcome]) -> None:
 def render_evidence(turn: Turn) -> None:
     """The Wikipedia passages the hallucination check was judged against."""
     html = '<div class="mp-section">Evidence · Wikipedia</div>'
+    if turn.search_query and turn.search_query != turn.question:
+        # A Georgian question was translated: show what was actually searched.
+        html += f'<div class="mp-muted">Searched for: “{ui.escape(turn.search_query)}”</div>'
     if turn.evidence_error:
         html += f'<div class="mp-muted">{ui.escape(turn.evidence_error)}</div>'
     elif not turn.evidence:
@@ -195,7 +198,7 @@ def render_details(turn: Turn, settings: Settings) -> None:
     rows = [
         ("Agreement", f"{turn.agreement.score:.2f}" if turn.agreement else "n/a"),
         ("Models", f"{turn.primary.model}, {turn.secondary.model}"),
-        ("Auditor", settings.auditor_model),
+        ("Auditor", settings.auditor.name),
         ("Latency", " · ".join(f"{step} {sec:.1f}s" for step, sec in turn.latency.items())),
     ]
     st.html('<div class="mp-section">Details</div>' + ui.meta_list(rows))
@@ -211,6 +214,11 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
 
         audit = turn.audit
         st.html(f'<div class="mp-muted">Audited answer by {turn.final_model}</div>')
+        if turn.answer_translation:
+            # The evidence was ranked against this translation, and the quotes
+            # in "Issues found" come from it.
+            with st.expander("Georgian answer: checked in English translation"):
+                st.markdown(turn.answer_translation)
         if "intent_alignment" in audit:
             intent = audit["intent_alignment"]
             st.html(ui.intent_card(intent.status, score_of(intent), intent_explanation(intent)))
@@ -323,7 +331,7 @@ def main() -> None:
                 return
         st.rerun()
 
-    question = st.chat_input("Ask a question…")
+    question = st.chat_input("Ask a question… · დასვით კითხვა…")
     if question:
         if waiting:
             # A new question means "keep the previous answer": close that turn
