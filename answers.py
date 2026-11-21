@@ -81,3 +81,38 @@ def ask_both(
         primary = pool.submit(_ask_safely, primary_model, messages)
         secondary = pool.submit(_ask_safely, secondary_model, messages)
         return primary.result(), secondary.result()
+
+
+# The reviser gets the failed answer plus the audit's findings and the evidence.
+# Saying "only the corrected answer" stops small models from writing
+# "Here is the revised answer:" or talking about the audit itself.
+REVISE_PROMPT = (
+    "You are revising an answer that failed an automatic quality audit. "
+    "Rewrite the ANSWER so that it fixes every PROBLEM listed. "
+    "Use the EVIDENCE for facts. If the evidence does not support a claim, "
+    "remove it or say that you are not sure. Keep the parts that were correct. "
+    "Reply with the corrected answer only: no introduction, and do not mention the audit."
+)
+
+
+def revise_answer(
+    model_name: str,
+    history: list[BaseMessage],
+    question: str,
+    answer: str,
+    problems: list[str],
+    evidence: list[str],
+) -> ModelAnswer:
+    """Ask a model to fix `answer` using the audit's problems and the evidence.
+
+    Recent history is included so follow-up questions ("when was he born?")
+    still make sense to the reviser.
+    """
+    evidence_text = "\n".join(f"- {e}" for e in evidence) or "(no evidence available)"
+    problems_text = "\n".join(f"- {p}" for p in problems)
+    request = (
+        f"QUESTION: {question}\n\nANSWER:\n{answer}\n\n"
+        f"PROBLEMS:\n{problems_text}\n\nEVIDENCE:\n{evidence_text}"
+    )
+    messages = [SystemMessage(REVISE_PROMPT), *history, HumanMessage(request)]
+    return _ask_safely(model_name, messages)

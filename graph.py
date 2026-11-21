@@ -1,8 +1,17 @@
 """The ModelProof workflow as a LangGraph graph.
 
-    START -> generate_answers -> compare -> retrieve_evidence -> audit -> finalize -> END
-                    |
-                    +--(no model answered)--> END
+    START -> generate_answers -> compare -> retrieve_evidence -> audit
+                  |                                               |
+                  +--(no model answered)--> END                   |
+                                                                  v
+                       any ❌ and revisions < MAX_REVISIONS ?  --no--> finalize -> END
+                                       | yes
+                                       v
+                                 human_review  (pauses: waits for the user)
+                                   |        |
+                          "revise" |        | "accept"
+                                   v        v
+                     audit <-- revise    finalize
 
 Each node is a small function: it reads the shared state and returns only the
 fields it changed. The real work happens in answers.py, agreement.py,
@@ -10,7 +19,8 @@ retrieval.py and auditor.py; this file only wires the steps together.
 
 Memory: the graph is compiled with a checkpointer (MemorySaver). LangGraph
 saves the state after every step under a `thread_id`, so each conversation
-(one per browser tab) keeps its own history between questions.
+(one per browser tab) keeps its own history between questions, and a run
+paused by interrupt() can be resumed later, even after Streamlit reruns.
 """
 
 from __future__ import annotations
@@ -28,17 +38,25 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.types import interrupt
 
 from agreement import Agreement, compare_answers
-from answers import ModelAnswer, ask_both, build_messages
-from auditor import CheckOutcome, CheckResult, Issue, run_audit
-from config import get_settings
+from answers import ModelAnswer, ask_both, build_messages, revise_answer
+from auditor import (
+    CheckOutcome,
+    CheckResult,
+    Issue,
+    describe_problems,
+    needs_revision,
+    run_audit,
+)
+from config import MAX_REVISIONS, get_settings
 from retrieval import Passage, get_evidence
 
 
 @dataclass
 class Turn:
-    """One finished question with everything we learned about its answer."""
+    """One question with everything we learned about its answer."""
 
     question: str
     primary: ModelAnswer
@@ -47,14 +65,22 @@ class Turn:
     agreement_error: str | None = None
     evidence: list[Passage] = field(default_factory=list)
     evidence_error: str | None = None
-    audit: dict[str, CheckOutcome] = field(default_factory=dict)
+    audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of the final answer
+    revisions: list[str] = field(default_factory=list)  # corrected answers, oldest first
+    original_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # before revising
+    revise_error: str | None = None
     latency: dict[str, float] = field(default_factory=dict)  # seconds per step
 
     @property
-    def final_answer(self) -> str:
+    def original_answer(self) -> str:
         # PRIMARY's answer is the "official" one; if PRIMARY failed we fall
         # back to SECONDARY so the user still gets an answer.
         return self.primary.text if self.primary.ok else self.secondary.text
+
+    @property
+    def final_answer(self) -> str:
+        """The latest revision if there is one, otherwise the original answer."""
+        return self.revisions[-1] if self.revisions else self.original_answer
 
     @property
     def final_model(self) -> str:
@@ -72,7 +98,7 @@ class ChatState(TypedDict, total=False):
 
     # Long-term memory (kept across questions)
     messages: Annotated[list[BaseMessage], add_messages]  # what the models see
-    turns: Annotated[list[Turn], operator.add]  # what the UI shows
+    turns: Annotated[list[Turn], operator.add]  # finished turns, for the UI
 
     # The current question (reset by new_question_input at every question)
     question: str
@@ -83,6 +109,10 @@ class ChatState(TypedDict, total=False):
     evidence: list[Passage]
     evidence_error: str | None
     audit: dict[str, CheckOutcome]
+    revisions: list[str]
+    original_audit: dict[str, CheckOutcome]
+    review_decision: str | None  # "revise" or "accept", set by human_review
+    revise_error: str | None
     latency: dict[str, float]
     error: str | None
 
@@ -98,9 +128,32 @@ def new_question_input(question: str) -> dict[str, Any]:
         "evidence": [],
         "evidence_error": None,
         "audit": {},
+        "revisions": [],
+        "original_audit": {},
+        "review_decision": None,
+        "revise_error": None,
         "latency": {},
         "error": None,
     }
+
+
+def turn_from_state(state: ChatState) -> Turn:
+    """Collect the current question's fields into a Turn (also used by the UI
+    to show a turn that is still waiting for review)."""
+    return Turn(
+        question=state["question"],
+        primary=state["primary"],
+        secondary=state["secondary"],
+        agreement=state.get("agreement"),
+        agreement_error=state.get("agreement_error"),
+        evidence=state.get("evidence", []),
+        evidence_error=state.get("evidence_error"),
+        audit=state.get("audit", {}),
+        revisions=state.get("revisions", []),
+        original_audit=state.get("original_audit", {}),
+        revise_error=state.get("revise_error"),
+        latency=state.get("latency", {}),
+    )
 
 
 def timed(step: str) -> Callable:
@@ -120,6 +173,20 @@ def timed(step: str) -> Callable:
         return wrapper
 
     return decorator
+
+
+def _recent_history(state: ChatState) -> list[BaseMessage]:
+    limit = get_settings().history_messages
+    return state.get("messages", [])[-limit:] if limit else []
+
+
+def _final_answer(state: ChatState) -> str:
+    return turn_from_state(state).final_answer
+
+
+def _evidence_texts(state: ChatState) -> list[str]:
+    # Each passage keeps its page title, so the model knows the source.
+    return [f"[{p.title}] {p.text}" for p in state.get("evidence", [])]
 
 
 # ------------------------------------------------------------------ nodes
@@ -156,11 +223,6 @@ def compare(state: ChatState) -> dict:
         return {"agreement_error": f"Agreement check unavailable: {error}"}
 
 
-def _final_answer(state: ChatState) -> str:
-    primary, secondary = state["primary"], state["secondary"]
-    return primary.text if primary.ok else secondary.text
-
-
 @timed("evidence")
 def retrieve_evidence(state: ChatState) -> dict:
     """Find Wikipedia passages that can confirm or contradict the final answer."""
@@ -177,28 +239,57 @@ def retrieve_evidence(state: ChatState) -> dict:
 
 @timed("audit")
 def audit(state: ChatState) -> dict:
-    """Run the four checks on the final answer, in parallel."""
-    limit = get_settings().history_messages
-    recent = state.get("messages", [])[-limit:] if limit else []
-    # The auditor sees each passage with its page title, so it knows the source.
-    evidence = [f"[{p.title}] {p.text}" for p in state.get("evidence", [])]
-    return {"audit": run_audit(state["question"], _final_answer(state), recent, evidence)}
+    """Run the four checks on the final (possibly revised) answer, in parallel."""
+    result = run_audit(
+        state["question"], _final_answer(state), _recent_history(state), _evidence_texts(state)
+    )
+    return {"audit": result}
+
+
+def human_review(state: ChatState) -> dict:
+    """Pause the graph and wait for the user's decision (human-in-the-loop).
+
+    interrupt() saves the state in the checkpointer and stops the run. The
+    UI shows a "Revise answer" button; clicking it resumes the run with
+    Command(resume="revise"), and interrupt() then returns "revise".
+    Note: when resumed, this node runs again from the top, so it must not do
+    anything before interrupt() that should only happen once.
+    """
+    decision = interrupt(
+        {"revisions_done": len(state.get("revisions", [])), "max_revisions": MAX_REVISIONS}
+    )
+    return {"review_decision": "revise" if decision == "revise" else "accept"}
+
+
+@timed("revise")
+def revise(state: ChatState) -> dict:
+    """Ask PRIMARY to fix the answer using the audit's problems and the evidence."""
+    revised = revise_answer(
+        get_settings().primary_model,
+        _recent_history(state),
+        state["question"],
+        _final_answer(state),
+        describe_problems(state["audit"]),
+        _evidence_texts(state),
+    )
+    if not revised.ok:
+        return {"revise_error": f"Revision failed: {revised.error}"}
+
+    update: dict[str, Any] = {
+        "revisions": state.get("revisions", []) + [revised.text],
+        "revise_error": None,
+    }
+    if not state.get("revisions"):  # first revision: keep the original verdict
+        update["original_audit"] = state["audit"]
+    return update
 
 
 def finalize(state: ChatState) -> dict:
     """The turn is done: save it to memory (for the models) and to the UI list."""
-    turn = Turn(
-        question=state["question"],
-        primary=state["primary"],
-        secondary=state["secondary"],
-        agreement=state.get("agreement"),
-        agreement_error=state.get("agreement_error"),
-        evidence=state.get("evidence", []),
-        evidence_error=state.get("evidence_error"),
-        audit=state.get("audit", {}),
-        latency=state.get("latency", {}),
-    )
+    turn = turn_from_state(state)
     return {
+        # The models remember the FINAL answer, so follow-up questions build
+        # on the corrected version.
         "messages": [HumanMessage(turn.question), AIMessage(turn.final_answer)],
         "turns": [turn],
     }
@@ -208,8 +299,23 @@ def finalize(state: ChatState) -> dict:
 
 
 def route_after_answers(state: ChatState) -> str:
-    """Conditional edge: stop early if no model answered."""
+    """Stop early if no model answered."""
     return END if state.get("error") else "compare"
+
+
+def route_after_audit(state: ChatState) -> str:
+    """Offer a revision only if a check failed and revisions are left."""
+    revisions_left = len(state.get("revisions", [])) < MAX_REVISIONS
+    return "human_review" if needs_revision(state["audit"]) and revisions_left else "finalize"
+
+
+def route_after_review(state: ChatState) -> str:
+    return "revise" if state.get("review_decision") == "revise" else "finalize"
+
+
+def route_after_revise(state: ChatState) -> str:
+    """Re-audit the new answer; if revising failed, ask the user again."""
+    return "human_review" if state.get("revise_error") else "audit"
 
 
 def create_checkpointer() -> MemorySaver:
@@ -232,12 +338,16 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node("compare", compare)
     graph.add_node("retrieve_evidence", retrieve_evidence)
     graph.add_node("audit", audit)
+    graph.add_node("human_review", human_review)
+    graph.add_node("revise", revise)
     graph.add_node("finalize", finalize)
 
     graph.add_edge(START, "generate_answers")
     graph.add_conditional_edges("generate_answers", route_after_answers, ["compare", END])
     graph.add_edge("compare", "retrieve_evidence")
     graph.add_edge("retrieve_evidence", "audit")
-    graph.add_edge("audit", "finalize")
+    graph.add_conditional_edges("audit", route_after_audit, ["human_review", "finalize"])
+    graph.add_conditional_edges("human_review", route_after_review, ["revise", "finalize"])
+    graph.add_conditional_edges("revise", route_after_revise, ["audit", "human_review"])
     graph.add_edge("finalize", END)
     return graph.compile(checkpointer=checkpointer or create_checkpointer())
