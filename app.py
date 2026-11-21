@@ -10,12 +10,22 @@ import uuid
 import streamlit as st
 from langgraph.types import Command
 
+import ui
 from audit_log import read_log
-from auditor import HIGHER_IS_BETTER, ICONS, CheckOutcome, needs_revision
+from auditor import CheckOutcome, needs_revision
 from config import MAX_REVISIONS, Settings, get_settings
 from graph import Turn, build_graph, new_question_input, turn_from_state
 
-st.set_page_config(page_title="ModelProof", page_icon="🛡️", layout="wide")
+# A Material icon (not an emoji) as the browser-tab icon: two joined circles.
+st.set_page_config(page_title="ModelProof", page_icon=":material/join_inner:", layout="wide")
+
+CHECK_LABELS = {
+    "hallucination": "Hallucination",
+    "bias": "Bias",
+    "toxicity": "Toxicity",
+    "intent_alignment": "Intent alignment",
+}
+SAFETY_CHECKS = ("hallucination", "bias", "toxicity")  # lower score = better
 
 
 def load_settings_or_stop() -> Settings:
@@ -27,122 +37,117 @@ def load_settings_or_stop() -> Settings:
         st.stop()
 
 
-def render_sidebar(settings: Settings) -> None:
-    """Read-only view of the current configuration."""
-    with st.sidebar:
-        st.header("ModelProof")
-        st.caption("Settings come from .env. Restart the app after editing it.")
-        st.markdown(
-            f"- **Provider:** `{settings.model_provider}`\n"
-            f"- **Primary model:** `{settings.primary_model}`\n"
-            f"- **Secondary model:** `{settings.secondary_model}`\n"
-            f"- **Auditor model:** `{settings.auditor_model}`\n"
-            f"- **Agreement threshold:** `{settings.agreement_threshold:.2f}`\n"
-            f"- **History sent to models:** last `{settings.history_messages}` messages"
-        )
-        st.divider()
-        # A new thread_id = a new, empty conversation in the checkpointer.
-        if st.button("🗑️ New conversation", width="stretch"):
-            st.session_state.thread_id = uuid.uuid4().hex
-            st.rerun()
-        log = read_log()
-        st.download_button(
-            "⬇️ Download log",
-            data=log,
-            file_name="audit_log.jsonl",
-            mime="application/jsonl",
-            width="stretch",
-            disabled=not log,  # nothing to download before the first answer
-            help="One JSON line per question: answers, scores, evidence, latency, errors.",
-        )
+def score_of(outcome: CheckOutcome) -> float | None:
+    return outcome.result.score if outcome.result else None
 
 
-def check_label(check: str) -> str:
-    return check.replace("_", " ").capitalize()
+# ---------------------------------------------------------------- header
+
+
+def render_header() -> None:
+    """Logo + name on the left, conversation tools on the right."""
+    brand, new_chat, download = st.columns([6, 1.3, 1.3], vertical_alignment="center")
+    brand.html(ui.header())
+    # A new thread_id = a new, empty conversation in the checkpointer.
+    if new_chat.button("New conversation", icon=":material/add_comment:", width="stretch"):
+        st.session_state.thread_id = uuid.uuid4().hex
+        st.rerun()
+    log = read_log()
+    download.download_button(
+        "Download log",
+        data=log,
+        file_name="audit_log.jsonl",
+        mime="application/jsonl",
+        icon=":material/download:",
+        width="stretch",
+        disabled=not log,  # nothing to download before the first answer
+        help="One JSON line per question: answers, scores, evidence, latency, errors.",
+    )
 
 
 # ------------------------------------------------------------ chat column
 
 
-def render_one_answer_only(turn: Turn) -> None:
-    """One model failed: show the answer we have and say why the other is missing."""
-    working, failed = (
-        (turn.primary, turn.secondary) if turn.primary.ok else (turn.secondary, turn.primary)
-    )
-    st.markdown(working.text)
-    st.warning(
-        f"Only `{working.model}` answered, so agreement could not be measured. "
-        f"`{failed.model}`: {failed.error}"
-    )
+def render_user_bubble(text: str, key: str) -> None:
+    # The key gives the container a CSS class (st-key-...), which ui.CSS styles as a bubble.
+    with st.container(key=f"msg-user-{key}"):
+        st.markdown(text)
 
 
-def render_answers(turn: Turn, threshold: float) -> None:
-    """Agree -> primary answer + badge. Disagree -> both answers side by side."""
+def agreement_pill(turn: Turn) -> str:
     if turn.agreement is None:
-        # Both answered but the embedding model could not run.
-        st.markdown(turn.primary.text)
-        st.warning(turn.agreement_error or "Agreement check unavailable.")
-        return
-
-    score = f"similarity **{turn.agreement.score:.2f}** (threshold {threshold:.2f})"
+        return ui.pill("Agreement n/a", "info")
+    score = f"{turn.agreement.score:.2f}"
     if turn.agreement.agree:
-        st.markdown(turn.primary.text)
-        st.success(f"✅ Models agree · {score}")
-        return
+        return ui.pill(f"Models agree · {score}", "good")
+    return ui.pill(f"Models disagree · {score}", "warn")
 
-    st.warning(f"⚠️ Models disagree · {score}. Compare both answers:")
-    for column, answer in zip(st.columns(2), (turn.primary, turn.secondary)):
+
+def render_answer_body(turn: Turn) -> None:
+    """Agree -> one answer. Disagree -> both side by side. One failed -> say why."""
+    if not (turn.primary.ok and turn.secondary.ok):
+        working, failed = (
+            (turn.primary, turn.secondary) if turn.primary.ok else (turn.secondary, turn.primary)
+        )
+        st.markdown(working.text)
+        st.caption(f"Only {working.model} answered. {failed.model}: {failed.error}")
+        return
+    if turn.agreement is None or turn.agreement.agree:
+        st.markdown(turn.primary.text)
+        if turn.agreement_error:
+            st.caption(turn.agreement_error)
+        return
+    for column, answer in zip(st.columns(2, gap="medium"), (turn.primary, turn.secondary)):
         with column:
-            st.markdown(f"**{answer.model}**")
+            st.html(f'<div class="mp-label">{answer.model}</div>')
             st.markdown(answer.text)
 
 
-def audit_summary(audit: dict[str, CheckOutcome]) -> str:
-    """One line of icons, e.g. "✅ Hallucination · ❌ Bias · ..."."""
-    return " · ".join(f"{ICONS[o.status]} {check_label(c)}" for c, o in audit.items())
-
-
-def render_revised(turn: Turn) -> None:
+def render_revised_body(turn: Turn) -> None:
     """Original and revised answer side by side, each with its audit verdict."""
-    st.info(f"✏️ Revised after the audit ({len(turn.revisions)} of max {MAX_REVISIONS} revisions)")
-    original, revised = st.columns(2)
+    original, revised = st.columns(2, gap="medium")
     with original:
-        st.markdown(f"**Original** (`{turn.final_model}`)")
+        st.html('<div class="mp-label">Original</div>')
         st.markdown(turn.original_answer)
-        st.caption("Audit: " + audit_summary(turn.original_audit))
+        st.html(audit_strip(turn.original_audit))
     with revised:
-        st.markdown("**Revised**")
+        st.html('<div class="mp-label">Revised</div>')
         st.markdown(turn.final_answer)
-        st.caption("Audit: " + audit_summary(turn.audit))
+        st.html(audit_strip(turn.audit))
 
 
-def render_turn(turn: Turn, threshold: float) -> None:
-    with st.chat_message("human"):
-        st.markdown(turn.question)
-    with st.chat_message("ai"):
+def audit_strip(audit: dict[str, CheckOutcome]) -> str:
+    return ui.audit_strip([(CHECK_LABELS[c], o.status) for c, o in audit.items()])
+
+
+def render_turn(turn: Turn, index: int) -> None:
+    render_user_bubble(turn.question, str(index))
+    with st.container(key=f"msg-bot-{index}"):
+        models = f"{turn.primary.model} + {turn.secondary.model}"
         if turn.revisions:
-            render_revised(turn)
+            revised = ui.pill(f"Revised after audit · {len(turn.revisions)} of {MAX_REVISIONS}", "info")
+            st.html(ui.bubble_head(models, agreement_pill(turn), revised))
+            render_revised_body(turn)
             return
-        if turn.primary.ok and turn.secondary.ok:
-            render_answers(turn, threshold)
-        else:
-            render_one_answer_only(turn)
-        # A one-line audit summary, so older answers keep their verdict visible.
+        st.html(ui.bubble_head(models, agreement_pill(turn)))
+        render_answer_body(turn)
         if turn.audit:
-            st.caption("Audit: " + audit_summary(turn.audit))
+            st.html(audit_strip(turn.audit))
 
 
 def render_review_controls(turn: Turn) -> str | None:
     """Human-in-the-loop: ask whether to revise. Returns "revise", "accept" or None."""
-    remaining = MAX_REVISIONS - len(turn.revisions)
     if turn.revise_error:
-        st.error(turn.revise_error)
-    st.warning(
-        "❌ The audit found a serious problem with this answer. "
-        f"Ask the primary model to fix it? ({remaining} revision(s) left)"
+        st.html(ui.callout(turn.revise_error, "fail"))
+    remaining = MAX_REVISIONS - len(turn.revisions)
+    st.html(
+        ui.callout(
+            "The audit found a serious problem with this answer. Ask the primary model "
+            f"to fix it using the audit and the evidence? ({remaining} revision(s) left)"
+        )
     )
-    revise_column, keep_column = st.columns(2)
-    if revise_column.button("✏️ Revise answer", type="primary", width="stretch"):
+    revise_column, keep_column, _ = st.columns([1.2, 1.2, 2])
+    if revise_column.button("Revise answer", type="primary", icon=":material/edit:", width="stretch"):
         return "revise"
     if keep_column.button("Keep this answer", width="stretch"):
         return "accept"
@@ -152,73 +157,77 @@ def render_review_controls(turn: Turn) -> str | None:
 # ----------------------------------------------------------- audit column
 
 
-def render_check(check: str, outcome: CheckOutcome) -> None:
-    """One audit check: icon, score, and the issues the auditor quoted."""
-    direction = "higher is better" if check in HIGHER_IS_BETTER else "lower is better"
+def intent_explanation(outcome: CheckOutcome) -> str:
     if outcome.result is None:
-        st.markdown(f"{ICONS['unavailable']} **{check_label(check)}**: audit unavailable")
-        st.caption(outcome.error)
-        return
-
-    st.markdown(
-        f"{ICONS[outcome.status]} **{check_label(check)}**: "
-        f"`{outcome.result.score:.2f}` ({direction})"
-    )
+        return outcome.error or "Audit unavailable."
     if outcome.result.issues:
-        with st.expander(f"{len(outcome.result.issues)} issue(s)"):
-            for issue in outcome.result.issues:
-                if issue.quote:
-                    st.markdown(f"> {issue.quote}")
-                st.markdown(issue.reason)
+        return outcome.result.issues[0].reason
+    return "The answer addresses what was asked."
+
+
+def render_issues(audit: dict[str, CheckOutcome]) -> None:
+    cards = [
+        ui.issue_card(CHECK_LABELS[check], outcome.status, issue.quote, issue.reason)
+        for check, outcome in audit.items()
+        if outcome.result and outcome.status in ("warn", "fail")
+        for issue in outcome.result.issues
+    ]
+    if cards:
+        st.html('<div class="mp-section">Issues found</div>' + "".join(cards))
 
 
 def render_evidence(turn: Turn) -> None:
     """The Wikipedia passages the hallucination check was judged against."""
-    st.markdown("**📚 Evidence (Wikipedia)**")
+    html = '<div class="mp-section">Evidence · Wikipedia</div>'
     if turn.evidence_error:
-        st.warning(turn.evidence_error)
-        return
-    if not turn.evidence:
-        st.caption("No relevant Wikipedia passages found; checked without evidence.")
-        return
-    for passage in turn.evidence:
-        # The score shows how close the passage is to the answer (re-ranking).
-        with st.expander(f"{passage.title} · relevance {passage.score:.2f}"):
-            st.markdown(passage.text)
-            st.markdown(f"[Open on Wikipedia ↗]({passage.url})")
+        html += f'<div class="mp-muted">{ui.escape(turn.evidence_error)}</div>'
+    elif not turn.evidence:
+        html += '<div class="mp-muted">No relevant passages found; checked without evidence.</div>'
+    else:
+        # Relevance = cosine similarity to the answer (the re-ranking score).
+        html += "".join(
+            ui.evidence_card(p.title, p.url, p.text, p.score) for p in turn.evidence
+        )
+    st.html(html)
+
+
+def render_details(turn: Turn, settings: Settings) -> None:
+    rows = [
+        ("Agreement", f"{turn.agreement.score:.2f}" if turn.agreement else "n/a"),
+        ("Models", f"{turn.primary.model}, {turn.secondary.model}"),
+        ("Auditor", settings.auditor_model),
+        ("Latency", " · ".join(f"{step} {sec:.1f}s" for step, sec in turn.latency.items())),
+    ]
+    st.html('<div class="mp-section">Details</div>' + ui.meta_list(rows))
 
 
 def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
-    """Details for the latest answer: verdicts, issues, agreement, models, latency."""
-    st.subheader("🔍 Audit")
-    if turn is None:
-        st.info("Ask a question to see how its answer is audited.")
-        return
+    """Details for the latest answer, laid out like a report card."""
+    with st.container(key="audit-panel"):
+        st.html('<div class="mp-panel-title">Answer audit</div>')
+        if turn is None or not turn.audit:
+            st.html('<div class="mp-muted">The audit of the latest answer appears here.</div>')
+            return
 
-    st.caption(f"Audited answer: `{turn.final_model}` · auditor: `{settings.auditor_model}`")
-    for check, outcome in turn.audit.items():
-        render_check(check, outcome)
-    if needs_revision(turn.audit):
-        if len(turn.revisions) >= MAX_REVISIONS:
-            st.error(f"❌ Still failing after {MAX_REVISIONS} revisions: treat this answer with caution.")
-        else:
-            st.error("❌ At least one check failed: treat this answer with caution.")
+        audit = turn.audit
+        st.html(f'<div class="mp-muted">Audited answer by {turn.final_model}</div>')
+        if "intent_alignment" in audit:
+            intent = audit["intent_alignment"]
+            st.html(ui.intent_card(intent.status, score_of(intent), intent_explanation(intent)))
 
-    st.divider()
-    render_evidence(turn)
-    st.divider()
-    if turn.agreement is not None:
-        st.markdown(f"**Agreement:** `{turn.agreement.score:.2f}`")
-    else:
-        st.markdown("**Agreement:** n/a")
-    st.markdown(
-        f"**Models:** `{turn.primary.model}` · `{turn.secondary.model}` · "
-        f"auditor `{settings.auditor_model}`"
-    )
-    st.markdown(
-        "**Latency:** "
-        + " · ".join(f"{step} {seconds:.1f}s" for step, seconds in turn.latency.items())
-    )
+        rows = "".join(
+            ui.metric_row(CHECK_LABELS[c], audit[c].status, score_of(audit[c]))
+            for c in SAFETY_CHECKS
+            if c in audit
+        )
+        st.html('<div class="mp-section">Content safety</div>' + rows)
+
+        if needs_revision(audit) and len(turn.revisions) >= MAX_REVISIONS:
+            st.html(ui.callout(f"Still failing after {MAX_REVISIONS} revisions: treat with caution.", "fail"))
+
+        render_issues(audit)
+        render_evidence(turn)
+        render_details(turn, settings)
 
 
 # ------------------------------------------------------------------- flow
@@ -283,22 +292,23 @@ def main() -> None:
     settings = load_settings_or_stop()
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = uuid.uuid4().hex  # one conversation per tab
-    render_sidebar(settings)
+    st.markdown(ui.CSS, unsafe_allow_html=True)
+    render_header()
 
     # The checkpointer is the single source of truth for the conversation.
     turns: list[Turn] = get_graph().get_state(thread_config()).values.get("turns", [])
     waiting = pending_turn()  # a turn paused at human_review is shown too
     shown = turns + [waiting] if waiting else turns
 
-    st.title("🛡️ ModelProof")
-    st.caption("A chat that does not blindly trust one LLM.")
     chat_column, audit_column = st.columns([3, 2], gap="large")
 
     # Streamlit re-runs this whole script on every interaction, so the page
     # is redrawn from the saved turns each time.
     with chat_column:
-        for turn in shown:
-            render_turn(turn, settings.agreement_threshold)
+        if not shown:
+            st.html(ui.empty_chat())
+        for index, turn in enumerate(shown):
+            render_turn(turn, index)
         decision = render_review_controls(waiting) if waiting else None
     with audit_column:
         render_audit_panel(shown[-1] if shown else None, settings)
@@ -323,8 +333,7 @@ def main() -> None:
                     st.error(error)
                     return
         with chat_column:
-            with st.chat_message("human"):
-                st.markdown(question)
+            render_user_bubble(question, "pending")
             error = run_graph(new_question_input(question), "Asking models…")
             if error:
                 st.error(error)  # failed questions are not saved; just ask again
