@@ -8,11 +8,7 @@ hallucination check in **real Wikipedia evidence**, and lets you ask for a **cor
 answer** when the audit finds a serious problem. It works in **English and Georgian**:
 every answer is written in the language of the question.
 
-This is a from-scratch Python rebuild of
-[ModelProof](https://github.com/hgenix20/modelproof), originally a TypeScript/React app
-and a category winner of the Microsoft AI Agents Hackathon 2025. It was built as an
-AI course project: every feature applies a concept from the course (see
-[Course concepts applied](#course-concepts-applied)).
+
 
 ---
 
