@@ -6,9 +6,10 @@ A small two-stage RAG pipeline:
                embeddings are closest to the ANSWER (precise, local).
 We search with the question because it names the topic; we re-rank with the
 answer because the answer's claims are what the auditor must verify.
-Georgian questions are searched with an English translation (English Wikipedia
-is far richer); the multilingual embeddings can still compare English
-passages with a Georgian answer.
+For Georgian, the graph passes English translations of the question and the
+answer (English Wikipedia is far richer, and English-to-English ranking is more
+precise). If a translation fails, the multilingual embeddings can still compare
+English passages with the Georgian text, only less precisely.
 """
 
 from __future__ import annotations
@@ -28,10 +29,12 @@ TIMEOUT_SECONDS = 10
 # Wikipedia search always returns *something*: for "hello how are you" it finds
 # songs called "Hello". Passages below this cosine score are dropped, because
 # judging an answer "against" unrelated text makes the auditor flag harmless
-# answers as hallucinations. Measured with the multilingual embedding model:
-# English answer vs. real evidence 0.64-0.72, English small talk vs. songs < 0.35;
-# Georgian answer vs. English evidence 0.40-0.49 (cross-language scores are lower,
-# so an off-topic passage can occasionally slip through for Georgian).
+# answers as hallucinations. Measured with the multilingual embedding model on
+# real Gemini answers: real evidence 0.72-0.84 (Georgian answers ranked through
+# their English translation; untranslated they scored only 0.52-0.61), English
+# small talk vs. songs < 0.35. A page whose title IS the greeting (the film
+# "Hello! How Are You?") still scores 0.44; the hallucination prompt handles
+# that case: a greeting makes no factual claim, so there is nothing to check.
 MIN_RELEVANCE = 0.35
 
 

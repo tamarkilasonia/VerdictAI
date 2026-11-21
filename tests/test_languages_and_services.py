@@ -8,6 +8,7 @@ import httpx
 import openai
 import pytest
 
+import answers
 import config
 import graph
 from answers import ModelAnswer
@@ -96,7 +97,7 @@ def test_friendly_error_messages(error, expected):
 def run_retrieve(monkeypatch, question, translate):
     searched = []
     monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
-    monkeypatch.setattr(graph, "translate_for_search", translate)
+    monkeypatch.setattr(graph, "translate_to_english", translate)
     monkeypatch.setattr(graph, "get_evidence", lambda query, answer, ua: searched.append(query) or [])
     state = {
         "question": question,
@@ -130,3 +131,101 @@ def test_failed_translation_falls_back_to_the_original_question(monkeypatch):
     update, searched = run_retrieve(monkeypatch, "ვინ აღმოაჩინა პენიცილინი?", broken)
     assert searched == ["ვინ აღმოაჩინა პენიცილინი?"]
     assert "evidence_error" not in update  # Wikipedia itself did not fail
+
+
+# ------------------------- ranking and auditing a Georgian answer in English
+
+GEORGIAN_QUESTION = "ვინ აღმოაჩინა პენიცილინი?"
+GEORGIAN_ANSWER = "პენიცილინი 1928 წელს ალექსანდერ ფლემინგმა აღმოაჩინა."
+ENGLISH = {
+    GEORGIAN_QUESTION: "Who discovered penicillin?",
+    GEORGIAN_ANSWER: "Alexander Fleming discovered penicillin in 1928.",
+}
+
+
+def run_audit_node(monkeypatch, answer, translate, translation=""):
+    """Run the graph's audit step with fakes; return its update and what was audited."""
+    audited = {}
+
+    def fake_run_audit(question, answer, conversation, evidence):
+        audited.update(question=question, answer=answer)
+        return {}
+
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr(graph, "translate_to_english", translate)
+    monkeypatch.setattr(graph, "run_audit", fake_run_audit)
+    state = {
+        "question": GEORGIAN_QUESTION,
+        "search_query": "Who discovered penicillin?",
+        "answer_translation": translation,
+        "primary": ModelAnswer("p", text=answer),
+        "secondary": ModelAnswer("s", text=answer),
+        "latency": {},
+    }
+    return graph.audit(state), audited
+
+
+def test_georgian_answer_is_ranked_and_audited_in_english(monkeypatch):
+    ranked = []
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr(graph, "translate_to_english", lambda spec, text: ENGLISH[text])
+    monkeypatch.setattr(
+        graph, "get_evidence", lambda query, answer, ua: ranked.append((query, answer)) or []
+    )
+    state = {
+        "question": GEORGIAN_QUESTION,
+        "primary": ModelAnswer("p", text=GEORGIAN_ANSWER),
+        "secondary": ModelAnswer("s", text=GEORGIAN_ANSWER),
+        "latency": {},
+    }
+    update = graph.retrieve_evidence(state)
+    assert ranked == [("Who discovered penicillin?", ENGLISH[GEORGIAN_ANSWER])]
+
+    # The audit reuses the same translation instead of translating again.
+    def must_not_translate(spec, t):
+        raise AssertionError("the answer was already translated")
+
+    _, audited = run_audit_node(
+        monkeypatch, GEORGIAN_ANSWER, must_not_translate, update["answer_translation"]
+    )
+    assert audited == {"question": "Who discovered penicillin?", "answer": ENGLISH[GEORGIAN_ANSWER]}
+
+
+def test_revised_georgian_answer_is_translated_again(monkeypatch):
+    # revise() clears the translation, so the audit must translate the new answer.
+    update, audited = run_audit_node(
+        monkeypatch, GEORGIAN_ANSWER, lambda spec, text: ENGLISH[text], translation=""
+    )
+    assert audited["answer"] == ENGLISH[GEORGIAN_ANSWER]
+    assert update["answer_translation"] == ENGLISH[GEORGIAN_ANSWER]  # shown in the UI
+
+
+def test_english_answer_is_audited_as_it_is(monkeypatch):
+    def must_not_translate(spec, t):
+        raise AssertionError("English answers must not be translated")
+
+    update, audited = run_audit_node(monkeypatch, "Fleming, in 1928.", must_not_translate)
+    assert audited["answer"] == "Fleming, in 1928."
+    assert update["answer_translation"] == ""
+
+
+def test_failed_answer_translation_audits_the_georgian_text(monkeypatch):
+    def broken(spec, t):
+        raise api_error(openai.RateLimitError, 429)
+
+    georgian = "პენიცილინი ფლემინგმა აღმოაჩინა."
+    update, audited = run_audit_node(monkeypatch, georgian, broken)
+    assert audited["answer"] == georgian
+    assert update["answer_translation"] == ""
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        ('"Who discovered penicillin?"', "Who discovered penicillin?"),  # wrapped: unwrap
+        ('"Mona Lisa" was painted by Leonardo.', '"Mona Lisa" was painted by Leonardo.'),
+    ],
+)
+def test_translation_keeps_quotes_that_belong_to_the_text(monkeypatch, reply, expected):
+    monkeypatch.setattr(answers, "ask_model", lambda spec, messages, temperature: reply)
+    assert answers.translate_to_english(SPEC, "ტექსტი") == expected

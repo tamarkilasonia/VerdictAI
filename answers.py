@@ -122,17 +122,24 @@ def revise_answer(
     return _ask_safely(spec, messages)
 
 
-# English Wikipedia is far richer than Georgian Wikipedia (a test question
-# like "who discovered penicillin" found nothing there), so Georgian questions
-# are translated into an English search query first.
+# Georgian text is translated into English twice per question, by PRIMARY
+# (Gemini), which knows Georgian well:
+# - the question, because English Wikipedia is far richer than Georgian
+#   Wikipedia (a test question like "who discovered penicillin" found nothing there);
+# - the answer, because the auditor misreads Georgian (see graph.audit).
 TRANSLATE_PROMPT = (
-    "Translate the user's question into English so it can be used as a "
-    "Wikipedia search query. Reply with the English translation only."
+    "Translate the user's text into English. Keep every name, date and number "
+    "exactly as written. Reply with the English translation only."
 )
 
 
-def translate_for_search(spec: ModelSpec, question: str) -> str:
-    """English version of a (Georgian) question, for the Wikipedia search."""
-    messages = [SystemMessage(TRANSLATE_PROMPT), HumanMessage(question)]
+def translate_to_english(spec: ModelSpec, text: str) -> str:
+    """English version of a (Georgian) text."""
+    messages = [SystemMessage(TRANSLATE_PROMPT), HumanMessage(text)]
     # temperature 0: a translation should not be creative.
-    return ask_model(spec, messages, temperature=0.0).strip().strip('"')
+    english = ask_model(spec, messages, temperature=0.0).strip()
+    # Models sometimes wrap the whole translation in quotes. Remove only such a
+    # pair: '"Mona Lisa" was painted by...' must keep its opening quote.
+    if len(english) > 1 and english[0] == english[-1] == '"':
+        english = english[1:-1].strip()
+    return english

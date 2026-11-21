@@ -214,6 +214,11 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
 
         audit = turn.audit
         st.html(f'<div class="mp-muted">Audited answer by {turn.final_model}</div>')
+        if turn.answer_translation:
+            # The evidence was ranked against this translation, and the quotes
+            # in "Issues found" come from it.
+            with st.expander("Georgian answer: checked in English translation"):
+                st.markdown(turn.answer_translation)
         if "intent_alignment" in audit:
             intent = audit["intent_alignment"]
             st.html(ui.intent_card(intent.status, score_of(intent), intent_explanation(intent)))

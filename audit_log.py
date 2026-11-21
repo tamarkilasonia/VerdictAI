@@ -68,6 +68,7 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
         "final_answer": turn.final_answer,
         "agreement_score": turn.agreement.score if turn.agreement else None,
         "search_query": turn.search_query,
+        "answer_translation": turn.answer_translation or None,
         "evidence_urls": sorted({passage.url for passage in turn.evidence}),
         "audit_scores": _scores(turn.audit),
         "original_audit_scores": _scores(turn.original_audit) if turn.revisions else None,
