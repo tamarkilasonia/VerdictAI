@@ -122,11 +122,28 @@ def revise_answer(
     return _ask_safely(spec, messages)
 
 
-# Georgian text is translated into English twice per question, by PRIMARY
-# (Gemini), which knows Georgian well:
-# - the question, because English Wikipedia is far richer than Georgian
-#   Wikipedia (a test question like "who discovered penicillin" found nothing there);
-# - the answer, because the auditor misreads Georgian (see graph.audit).
+# Wikipedia's search needs every word to match, so a whole sentence finds
+# nothing or junk: "As far as I know, The Knight in the Panther's Skin was
+# written by Galaktion Tabidze." found no page, and "what is the capital of
+# Kutaisi" found a singer. PRIMARY turns the question into a few English
+# keywords instead (English Wikipedia is also far richer than Georgian).
+SEARCH_QUERY_PROMPT = (
+    "Write a short English Wikipedia search query (2 to 6 words) for the topic "
+    "of the user's message: the person, work, place or event it is about. Do not "
+    "answer the message. Reply with the query only.\n"
+    "Example: 'მე როგორც ვიცი ვეფხისტყაოსანი გალაკტიონმა დაწერა' -> "
+    "The Knight in the Panther's Skin"
+)
+
+
+def make_search_query(spec: ModelSpec, question: str) -> str:
+    """A few English keywords for the Wikipedia search (question in any language)."""
+    messages = [SystemMessage(SEARCH_QUERY_PROMPT), HumanMessage(question)]
+    return _unquote(ask_model(spec, messages, temperature=0.0))
+
+
+# A Georgian answer is translated into English by PRIMARY (Gemini), which knows
+# Georgian well, because the auditor misreads Georgian (see graph.audit).
 TRANSLATE_PROMPT = (
     "Translate the user's text into English. Keep every name, date and number "
     "exactly as written. Reply with the English translation only."
@@ -137,9 +154,15 @@ def translate_to_english(spec: ModelSpec, text: str) -> str:
     """English version of a (Georgian) text."""
     messages = [SystemMessage(TRANSLATE_PROMPT), HumanMessage(text)]
     # temperature 0: a translation should not be creative.
-    english = ask_model(spec, messages, temperature=0.0).strip()
-    # Models sometimes wrap the whole translation in quotes. Remove only such a
-    # pair: '"Mona Lisa" was painted by...' must keep its opening quote.
-    if len(english) > 1 and english[0] == english[-1] == '"':
-        english = english[1:-1].strip()
-    return english
+    return _unquote(ask_model(spec, messages, temperature=0.0))
+
+
+def _unquote(text: str) -> str:
+    """Remove quotes that wrap the WHOLE reply (models sometimes add them).
+
+    Only such a pair: '"Mona Lisa" was painted by...' keeps its opening quote.
+    """
+    text = text.strip()
+    if len(text) > 1 and text[0] == text[-1] == '"':
+        text = text[1:-1].strip()
+    return text
