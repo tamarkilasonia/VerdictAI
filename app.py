@@ -5,41 +5,15 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
+import uuid
 
 import streamlit as st
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from agreement import Agreement, compare_answers
-from answers import ModelAnswer, ask_both, build_messages
-from auditor import HIGHER_IS_BETTER, ICONS, CheckOutcome, needs_revision, run_audit
+from auditor import HIGHER_IS_BETTER, ICONS, CheckOutcome, needs_revision
 from config import Settings, get_settings
+from graph import Turn, build_graph, new_question_input
 
 st.set_page_config(page_title="ModelProof", page_icon="🛡️", layout="wide")
-
-
-@dataclass
-class Turn:
-    """One question and everything we learned about its answers."""
-
-    question: str
-    primary: ModelAnswer
-    secondary: ModelAnswer
-    agreement: Agreement | None = None
-    agreement_error: str | None = None
-    audit: dict[str, CheckOutcome] = field(default_factory=dict)
-    latency: dict[str, float] = field(default_factory=dict)  # seconds per step
-
-    @property
-    def final_answer(self) -> str:
-        # The primary answer is the "official" one; if PRIMARY failed we fall
-        # back to SECONDARY so the user still gets an answer.
-        return self.primary.text if self.primary.ok else self.secondary.text
-
-    @property
-    def final_model(self) -> str:
-        return self.primary.model if self.primary.ok else self.secondary.model
 
 
 def load_settings_or_stop() -> Settings:
@@ -61,16 +35,14 @@ def render_sidebar(settings: Settings) -> None:
             f"- **Primary model:** `{settings.primary_model}`\n"
             f"- **Secondary model:** `{settings.secondary_model}`\n"
             f"- **Auditor model:** `{settings.auditor_model}`\n"
-            f"- **Agreement threshold:** `{settings.agreement_threshold:.2f}`"
+            f"- **Agreement threshold:** `{settings.agreement_threshold:.2f}`\n"
+            f"- **History sent to models:** last `{settings.history_messages}` messages"
         )
-
-
-def history_messages(turns: list[Turn]) -> list[BaseMessage]:
-    """The chat so far, as the models see it: each question + its final answer."""
-    messages: list[BaseMessage] = []
-    for turn in turns:
-        messages += [HumanMessage(turn.question), AIMessage(turn.final_answer)]
-    return messages
+        st.divider()
+        # A new thread_id = a new, empty conversation in the checkpointer.
+        if st.button("🗑️ New conversation", width="stretch"):
+            st.session_state.thread_id = uuid.uuid4().hex
+            st.rerun()
 
 
 def check_label(check: str) -> str:
@@ -185,55 +157,57 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
 
 
 # ------------------------------------------------------------------- flow
-# Phase 4 moves this flow into a LangGraph graph; for now the UI runs it.
 
 
-def run_turn(settings: Settings, question: str) -> Turn | None:
-    """Ask both models, compare their answers, audit the final one."""
-    history = history_messages(st.session_state.turns)
-    messages = build_messages(history, question, settings.history_messages)
+@st.cache_resource
+def get_graph():
+    """Build the graph once for the whole server, not on every rerun.
 
-    start = time.perf_counter()
-    with st.spinner("Asking models…"):
-        primary, secondary = ask_both(
-            settings.primary_model, settings.secondary_model, messages
-        )
-    if not primary.ok and not secondary.ok:
-        with st.chat_message("ai"):
-            st.error(f"No model could answer.\n\n- {primary.error}\n- {secondary.error}")
-        return None  # nothing to save: the question can simply be asked again
-    turn = Turn(question, primary, secondary)
-    turn.latency["answers"] = time.perf_counter() - start
+    It holds one in-memory checkpointer; conversations stay separate because
+    each browser tab uses its own thread_id.
+    """
+    return build_graph()
 
-    if primary.ok and secondary.ok:
-        start = time.perf_counter()
-        with st.spinner("Comparing answers…"):
-            try:
-                turn.agreement = compare_answers(
-                    primary.text, secondary.text, settings.agreement_threshold
-                )
-            # e.g. no internet on the very first run, when the embedding
-            # model still has to be downloaded.
-            except Exception as error:  # noqa: BLE001
-                turn.agreement_error = f"Agreement check unavailable: {error}"
-        turn.latency["agreement"] = time.perf_counter() - start
 
-    start = time.perf_counter()
-    with st.spinner("Auditing…"):
-        recent = history[-settings.history_messages :] if settings.history_messages else []
-        turn.audit = run_audit(question, turn.final_answer, recent)
-    turn.latency["audit"] = time.perf_counter() - start
-    return turn
+def thread_config() -> dict:
+    """Tells LangGraph which conversation (thread) to load and save."""
+    return {"configurable": {"thread_id": st.session_state.thread_id}}
+
+
+# What the status box says while the NEXT step runs, keyed by the step that just finished.
+NEXT_STEP_LABEL = {
+    "generate_answers": "Comparing answers…",
+    "compare": "Auditing…",
+    "audit": "Saving…",
+}
+
+
+def run_graph(question: str) -> str | None:
+    """Run one question through the graph. Returns an error message, or None."""
+    graph, config = get_graph(), thread_config()
+    with st.status("Asking models…") as status:
+        try:
+            # stream_mode="updates" yields after every finished node, which
+            # lets us show the current step instead of one long spinner.
+            for update in graph.stream(new_question_input(question), config, stream_mode="updates"):
+                for node in update:
+                    status.update(label=NEXT_STEP_LABEL.get(node, "Working…"))
+        except Exception as error:  # noqa: BLE001 - never show a stack trace
+            status.update(label="Failed", state="error")
+            return f"Something went wrong: {type(error).__name__}: {error}"
+        error = graph.get_state(config).values.get("error")
+        status.update(label="Failed" if error else "Done", state="error" if error else "complete")
+    return error
 
 
 def main() -> None:
     settings = load_settings_or_stop()
+    if "thread_id" not in st.session_state:
+        st.session_state.thread_id = uuid.uuid4().hex  # one conversation per tab
     render_sidebar(settings)
 
-    # One list per browser tab. In Phase 4 this moves into LangGraph memory.
-    if "turns" not in st.session_state:
-        st.session_state.turns = []
-    turns: list[Turn] = st.session_state.turns
+    # The checkpointer is the single source of truth for the conversation.
+    turns: list[Turn] = get_graph().get_state(thread_config()).values.get("turns", [])
 
     st.title("🛡️ ModelProof")
     st.caption("A chat that does not blindly trust one LLM.")
@@ -252,10 +226,11 @@ def main() -> None:
         with chat_column:
             with st.chat_message("human"):
                 st.markdown(question)
-            turn = run_turn(settings, question)
-        if turn is not None:
-            turns.append(turn)
-            st.rerun()  # redraw so the new turn and its audit appear
+            error = run_graph(question)
+            if error:
+                st.error(error)  # failed questions are not saved; just ask again
+                return
+        st.rerun()  # redraw so the new turn and its audit appear
 
 
 main()
