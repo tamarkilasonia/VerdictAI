@@ -1,10 +1,14 @@
-"""Asking the answering models (PRIMARY, later also SECONDARY) a question."""
+"""Asking the answering models (PRIMARY and SECONDARY) a question."""
 
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from models import get_chat_model
+from models import friendly_error, get_chat_model
 
 # Small models invent facts easily. Telling them it is fine to say "I'm not
 # sure" reduces made-up details, which makes the later audit more meaningful.
@@ -15,6 +19,20 @@ SYSTEM_PROMPT = (
     "If you are not sure about a fact, say so instead of guessing. "
     "Never invent sources, quotes, numbers or names."
 )
+
+
+@dataclass
+class ModelAnswer:
+    """What one model returned. Exactly one of `text` / `error` is set."""
+
+    model: str
+    text: str | None = None
+    error: str | None = None
+    seconds: float = 0.0
+
+    @property
+    def ok(self) -> bool:
+        return self.text is not None
 
 
 def build_messages(
@@ -40,3 +58,34 @@ def ask_model(model_name: str, messages: list[BaseMessage]) -> str:
             for part in content
         )
     return content.strip()
+
+
+def _ask_safely(model_name: str, messages: list[BaseMessage]) -> ModelAnswer:
+    """Like ask_model, but never raises: a failure becomes an error message.
+
+    This is what lets one model fail without taking the other one down.
+    """
+    start = time.perf_counter()
+    try:
+        text = ask_model(model_name, messages)
+        return ModelAnswer(model_name, text=text, seconds=time.perf_counter() - start)
+    except Exception as error:  # noqa: BLE001 - any failure is reported, not raised
+        return ModelAnswer(
+            model_name,
+            error=friendly_error(error, model_name),
+            seconds=time.perf_counter() - start,
+        )
+
+
+def ask_both(
+    primary_model: str, secondary_model: str, messages: list[BaseMessage]
+) -> tuple[ModelAnswer, ModelAnswer]:
+    """Ask both models the same messages at the same time.
+
+    Each call mostly waits for the model server, so two threads finish in
+    roughly the time of the slower model instead of the sum of both.
+    """
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        primary = pool.submit(_ask_safely, primary_model, messages)
+        secondary = pool.submit(_ask_safely, secondary_model, messages)
+        return primary.result(), secondary.result()
