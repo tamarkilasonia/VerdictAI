@@ -216,8 +216,16 @@ def _thread_id() -> str:
 
 
 def _evidence_texts(state: ChatState) -> list[str]:
+    """What the auditor and the reviser read: English Wikipedia passages, plus
+    English translations of Georgian pages that English Wikipedia lacks."""
     # Each passage keeps its page title, so the model knows the source.
-    return [f"[{p.title}] {p.text}" for p in state.get("evidence", [])]
+    texts = [f"[{p.title}] {p.text}" for p in state.get("evidence", [])]
+    texts += [
+        f"[{p.title}, Georgian Wikipedia, translated] {p.english_text}"
+        for p in state.get("georgian_sources", [])
+        if p.english_text
+    ]
+    return texts
 
 
 # ------------------------------------------------------------------ nodes
@@ -274,12 +282,30 @@ def _translation(text: str) -> str:
         return ""
 
 
-def _search_query(question: str) -> str:
-    """A few English keywords for Wikipedia; the question itself if that fails."""
+def _search_query(question: str, language: str = "English") -> str:
+    """A few keywords for Wikipedia; the question itself if that fails."""
     try:
-        return make_search_query(get_settings().primary, question) or question
+        return make_search_query(get_settings().primary, question, language) or question
     except Exception:  # noqa: BLE001 - e.g. rate limit: search with the question
         return question
+
+
+def _georgian_sources(state: ChatState, english_evidence: list[Passage]) -> list[Passage]:
+    """Georgian Wikipedia passages for a Georgian question (see retrieval.py).
+
+    Passages from pages that English Wikipedia lacks are translated into
+    English, so the auditor can use them: it misreads Georgian text.
+    """
+    sources = get_georgian_sources(
+        [p.title for p in english_evidence],
+        _search_query(state["question"], "Georgian"),
+        _final_answer(state),
+        get_settings().wiki_user_agent,
+    )
+    for passage in sources:
+        if passage.only_in_georgian:
+            passage.english_text = _translation(passage.text)
+    return sources
 
 
 @timed("evidence")
@@ -295,21 +321,18 @@ def retrieve_evidence(state: ChatState) -> dict:
     query = _search_query(state["question"])
     translation = _translation(answer)
     update: dict[str, Any] = {"search_query": query, "answer_translation": translation}
-    user_agent = get_settings().wiki_user_agent
     try:
-        evidence = get_evidence(query, translation or answer, user_agent)
+        update["evidence"] = get_evidence(query, translation or answer, get_settings().wiki_user_agent)
     # No internet, Wikipedia down, timeout...: the audit simply continues
     # without evidence, and the UI says so.
     except Exception as error:  # noqa: BLE001
-        return {**update, "evidence_error": f"Wikipedia unavailable ({type(error).__name__}); checked without evidence."}
-    update["evidence"] = evidence
-    if is_georgian(state["question"]) and evidence:
-        # The same pages on Georgian Wikipedia, for the user to read. Only a
-        # nice extra: if it fails, the check is not affected.
+        update["evidence_error"] = f"English Wikipedia unavailable ({type(error).__name__})."
+    if is_georgian(state["question"]):
+        # Georgian Wikipedia too: to read the sources in Georgian, and for
+        # Georgian topics that English Wikipedia does not cover. A failure
+        # here only means fewer sources.
         try:
-            update["georgian_sources"] = get_georgian_sources(
-                [passage.title for passage in evidence], answer, user_agent
-            )
+            update["georgian_sources"] = _georgian_sources(state, update.get("evidence", []))
         except Exception:  # noqa: BLE001
             pass
     return update

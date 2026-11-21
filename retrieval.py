@@ -55,10 +55,18 @@ class Passage:
     url: str  # link shown in the UI
     text: str  # a few sentences from the page
     score: float = 0.0  # cosine similarity to the answer (set by rerank)
+    # Georgian pages with no English counterpart in the evidence: their English
+    # translation (set by the graph) is given to the auditor as evidence too.
+    only_in_georgian: bool = False
+    english_text: str = ""
 
 
-def search_wikipedia(query: str, user_agent: str) -> list[tuple[str, str, str]]:
+def search_wikipedia(
+    query: str, user_agent: str, api: str = WIKIPEDIA_API
+) -> list[tuple[str, str, str]]:
     """Return (title, url, intro text) for the top Wikipedia search results.
+
+    `api` chooses the Wikipedia: English by default, or GEORGIAN_WIKIPEDIA_API.
 
     One API call does both the search (generator=search) and fetches each
     page's plain-text introduction (prop=extracts). Raises on network errors.
@@ -79,7 +87,7 @@ def search_wikipedia(query: str, user_agent: str) -> list[tuple[str, str, str]]:
     }
     # Wikimedia asks every client to identify itself with a descriptive User-Agent.
     response = requests.get(
-        WIKIPEDIA_API, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS
+        api, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS
     )
     response.raise_for_status()
     pages = response.json().get("query", {}).get("pages", [])
@@ -148,18 +156,8 @@ def georgian_titles(english_titles: list[str], user_agent: str) -> list[str]:
     return [page["langlinks"][0]["title"] for page in pages if page.get("langlinks")]
 
 
-def get_georgian_sources(english_titles: list[str], answer: str, user_agent: str) -> list[Passage]:
-    """Passages from Georgian Wikipedia about the same pages as the evidence.
-
-    Shown to Georgian-speaking users so they can read the sources in their
-    own language. They are NOT given to the auditor: Georgian Wikipedia's
-    introductions are much shorter (e.g. its "Penicillin" introduction is about
-    the drug group and says nothing about who discovered it), and the auditor
-    misreads Georgian.
-    """
-    titles = georgian_titles(sorted(set(english_titles)), user_agent)
-    if not titles:
-        return []
+def _georgian_intros(titles: list[str], user_agent: str) -> list[tuple[str, str, str]]:
+    """(title, url, intro) of these Georgian Wikipedia pages."""
     params = {
         "action": "query",
         "format": "json",
@@ -176,11 +174,32 @@ def get_georgian_sources(english_titles: list[str], answer: str, user_agent: str
     )
     response.raise_for_status()
     pages = response.json().get("query", {}).get("pages", [])
+    return [(p["title"], p.get("fullurl", ""), p["extract"]) for p in pages if p.get("extract")]
+
+
+def get_georgian_sources(
+    english_titles: list[str], georgian_query: str, answer: str, user_agent: str
+) -> list[Passage]:
+    """Passages from Georgian Wikipedia, found in two ways:
+
+    1. the Georgian versions of the English evidence pages (Wikipedia's
+       language links, the "ქართული" link in the sidebar): the same topics,
+       so they are shown for reading but not checked again;
+    2. a direct search of Georgian Wikipedia, because Georgian topics (a
+       village such as Shrosha, a Georgian TV series) are often missing in
+       English. Pages found only this way are marked `only_in_georgian`; the
+       graph translates them so the auditor can use them as evidence.
+    Ranked against the (Georgian) answer; the same relevance filter applies.
+    """
+    linked = georgian_titles(sorted(set(english_titles)), user_agent) if english_titles else []
+    pages = _georgian_intros(linked, user_agent) if linked else []
+    seen = {title for title, _, _ in pages}
+    found = [page for page in search_wikipedia(georgian_query, user_agent, GEORGIAN_WIKIPEDIA_API)
+             if page[0] not in seen]
     passages = [
-        Passage(title=page["title"], url=page.get("fullurl", ""), text=chunk)
-        for page in pages
-        if page.get("extract")
-        for chunk in split_passages(page["extract"])
+        Passage(title=title, url=url, text=chunk, only_in_georgian=title in {p[0] for p in found})
+        for title, url, intro in pages + found
+        for chunk in split_passages(intro)
     ]
     # Georgian passages vs. the Georgian answer: same language, so the
     # multilingual embeddings compare them directly.
