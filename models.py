@@ -93,6 +93,18 @@ def get_chat_model(
     )
 
 
+def reply_text(reply: Any) -> str:
+    """Plain text of a model reply (shared by the answering models and the auditor)."""
+    content = reply.content
+    # Most providers return a string; some return a list of content parts.
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return content.strip()
+
+
 def friendly_error(error: Exception, model_name: str = "") -> str:
     """Turn a provider exception into a short message for the UI (no stack trace)."""
     settings = get_settings()

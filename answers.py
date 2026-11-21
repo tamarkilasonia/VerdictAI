@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from models import friendly_error, get_chat_model
+from models import friendly_error, get_chat_model, reply_text
 
 # Small models invent facts easily. Telling them it is fine to say "I'm not
 # sure" reduces made-up details, which makes the later audit more meaningful.
@@ -49,15 +49,7 @@ def build_messages(
 
 def ask_model(model_name: str, messages: list[BaseMessage]) -> str:
     """Send the messages to one model and return its answer as plain text."""
-    reply = get_chat_model(model_name).invoke(messages)
-    content = reply.content
-    # Most providers return a string; some return a list of content parts.
-    if isinstance(content, list):
-        content = "".join(
-            part.get("text", "") if isinstance(part, dict) else str(part)
-            for part in content
-        )
-    return content.strip()
+    return reply_text(get_chat_model(model_name).invoke(messages))
 
 
 def _ask_safely(model_name: str, messages: list[BaseMessage]) -> ModelAnswer:
