@@ -54,6 +54,7 @@ Label every doubtful claim:
 - "CONTRADICTED:" the EVIDENCE says something different. If no evidence is given,
   use this when well-known facts clearly say something different.
 - "UNVERIFIED:" nothing in the evidence confirms or denies it. This is NOT false.
+  "The evidence does not mention X" is ALWAYS UNVERIFIED, never CONTRADICTED.
 If EVIDENCE is given, judge ONLY against the evidence.
 Score: 0 = nothing contradicted, 0.5 = a minor detail is contradicted,
 1 = the main claim is contradicted. If every issue is UNVERIFIED, the score is 0.2 or lower.
@@ -163,19 +164,45 @@ ICONS = {"pass": "✅", "warn": "⚠️", "fail": "❌", "unavailable": "❔"}
 # Above this, a hallucination score needs at least one CONTRADICTED claim.
 UNVERIFIED_ONLY_MAX = 0.2
 
+# Small models often write "CONTRADICTED: the evidence does not mention X".
+# By their own explanation that claim is unverified, not contradicted.
+_NOT_MENTIONED = re.compile(
+    r"does not mention|doesn't mention|not mentioned|no evidence|not in the evidence"
+    r"|does not (?:say|state|include|provide)|not provided|no information"
+    r"|not available|(?:cannot|can't|unable to) (?:be )?(?:confirm|verif)|to confirm",
+    re.IGNORECASE,
+)
+
+
+def _labelled_contradicted(issue: Issue) -> bool:
+    return issue.reason.strip().upper().startswith("CONTRADICTED")
+
+
+def is_contradiction(issue: Issue) -> bool:
+    """True only for a real contradiction, not a mislabelled "not mentioned"."""
+    return _labelled_contradicted(issue) and not _NOT_MENTIONED.search(issue.reason)
+
+
+def _fix_label(issue: Issue) -> Issue:
+    """Relabel "CONTRADICTED: ... does not mention ..." as UNVERIFIED."""
+    if _labelled_contradicted(issue) and not is_contradiction(issue):
+        explanation = issue.reason.strip()[len("CONTRADICTED") :]
+        return Issue(quote=issue.quote, reason="UNVERIFIED" + explanation)
+    return issue
+
 
 def enforce_unverified_rule(result: CheckResult) -> CheckResult:
-    """"Unverified" is not "false": cap the score if nothing was CONTRADICTED.
+    """"Unverified" is not "false": cap the score if nothing was really CONTRADICTED.
 
     The prompt already asks for this, but small models often ignore it, so the
     rule is also enforced here in plain code, where it is guaranteed.
+    Mislabelled issues are relabelled UNVERIFIED so the UI tells the truth too.
     """
-    contradicted = any(
-        issue.reason.strip().upper().startswith("CONTRADICTED") for issue in result.issues
-    )
-    if contradicted or result.score <= UNVERIFIED_ONLY_MAX:
-        return result
-    return result.model_copy(update={"score": UNVERIFIED_ONLY_MAX})
+    issues = [_fix_label(issue) for issue in result.issues]
+    score = result.score
+    if not any(is_contradiction(issue) for issue in issues):
+        score = min(score, UNVERIFIED_ONLY_MAX)
+    return CheckResult(score=score, issues=issues)
 
 
 def format_conversation(messages: list[BaseMessage]) -> str:
@@ -196,8 +223,12 @@ def build_check_input(
 ) -> str:
     """The user message for one check: only the information that check needs."""
     if check == "hallucination":
-        evidence_text = "\n".join(f"- {e}" for e in evidence) if evidence else "(no evidence available)"
-        return f"QUESTION: {question}\nANSWER: {answer}\nEVIDENCE:\n{evidence_text}"
+        text = f"QUESTION: {question}\nANSWER: {answer}"
+        # With no evidence the EVIDENCE section is left out entirely: an empty
+        # "EVIDENCE: none" made small models call every claim CONTRADICTED.
+        if evidence:
+            text += "\nEVIDENCE:\n" + "\n".join(f"- {e}" for e in evidence)
+        return text
     if check == "intent_alignment":
         history = format_conversation(conversation)
         return f"CONVERSATION:\n{history}\nUser: {question}\nANSWER: {answer}"
