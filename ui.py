@@ -71,17 +71,15 @@ h1, h2, h3 { letter-spacing: -0.01em; }
 .mp-section { font-size: 0.8rem; font-weight: 700; color: #4a5468; text-transform: uppercase;
   letter-spacing: 0.05em; margin: 18px 0 8px; }
 
-.mp-intent { background: #f1f5fe; border-radius: 12px; padding: 14px 16px; margin-top: 12px; }
-.mp-intent-text { color: #3f485a; font-size: 0.88rem; margin-top: 8px; line-height: 1.45; }
 
-.mp-row { display: flex; align-items: center; gap: 10px; }
-.mp-row-name { font-weight: 600; color: #1c2333; flex: 1; font-size: 0.93rem; }
-.mp-row-score { font-weight: 700; font-size: 0.93rem; }
-.mp-row-word { color: #6b7385; font-size: 0.8rem; min-width: 74px; text-align: right; }
-.mp-metric { padding: 9px 0; border-bottom: 1px solid #f0f2f6; }
-.mp-metric:last-child { border-bottom: none; }
-.mp-bar { height: 4px; background: #eef1f5; border-radius: 4px; margin: 7px 0 0 30px; }
-.mp-bar > div { height: 4px; border-radius: 4px; }
+.mp-compare { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.mp-compare th { text-align: left; font-size: 0.74rem; color: #6b7385; font-weight: 600;
+  padding: 0 6px 6px; border-bottom: 1px solid #eef1f5; word-break: break-word; }
+.mp-compare td { padding: 8px 6px; border-bottom: 1px solid #f0f2f6; color: #1c2333; }
+.mp-compare td:first-child { font-weight: 600; padding-left: 0; }
+.mp-compare tr:last-child td { border-bottom: none; }
+.mp-cell { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+.mp-note { color: #6b7385; font-size: 0.76rem; margin-top: 6px; }
 
 .mp-issue { border-left: 4px solid; border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
 .mp-issue-title { font-weight: 700; font-size: 0.88rem; }
@@ -178,8 +176,8 @@ def pill(text: str, kind: str) -> str:
     return f'<span class="mp-pill mp-pill-{kind}">{escape(text)}</span>'
 
 
-def bubble_head(models: str, *pills: str) -> str:
-    return f'<div class="mp-bubble-head"><span>{escape(models)}</span>{"".join(pills)}</div>'
+def bubble_head(*pills: str) -> str:
+    return f'<div class="mp-bubble-head">{"".join(pills)}</div>'
 
 
 def audit_strip(items: list[tuple[str, str]]) -> str:
@@ -190,32 +188,23 @@ def audit_strip(items: list[tuple[str, str]]) -> str:
     return f'<div class="mp-strip">{spans}</div>'
 
 
-def metric_row(label: str, status: str, score: float | None) -> str:
-    """One check as a row: icon, name, percentage, word and a thin bar."""
-    color = STATUS_COLOR[status]
-    percent = "n/a" if score is None else f"{round(score * 100)}%"
-    width = 0 if score is None else round(score * 100)
-    return (
-        '<div class="mp-metric"><div class="mp-row">'
-        f"{status_icon(status)}"
-        f'<span class="mp-row-name">{escape(label)}</span>'
-        f'<span class="mp-row-score" style="color:{color}">{percent}</span>'
-        f'<span class="mp-row-word">{STATUS_WORD[status]}</span></div>'
-        f'<div class="mp-bar"><div style="width:{width}%;background:{color}"></div></div></div>'
-    )
+def comparison_table(models: list[str], rows: list[tuple[str, list[tuple[str, float | None]]]]) -> str:
+    """Checks as rows, models as columns: icon + score in every cell.
 
-
-def intent_card(status: str, score: float | None, explanation: str) -> str:
-    color = STATUS_COLOR[status]
-    percent = "n/a" if score is None else f"{round(score * 100)}%"
-    return (
-        '<div class="mp-intent"><div class="mp-row">'
-        f"{status_icon(status, 22)}"
-        '<span class="mp-row-name">Intent alignment</span>'
-        f'<span class="mp-row-score" style="color:{color}">{percent}</span>'
-        f'<span class="mp-row-word">{STATUS_WORD[status]}</span></div>'
-        f'<div class="mp-intent-text">{escape(explanation)}</div></div>'
-    )
+    rows: (check label, [(status, score) per model]).
+    """
+    head = "".join(f"<th>{escape(model)}</th>" for model in models)
+    body = ""
+    for label, cells in rows:
+        tds = ""
+        for status, score in cells:
+            percent = "n/a" if score is None else f"{round(score * 100)}%"
+            tds += (
+                f'<td><span class="mp-cell" style="color:{STATUS_COLOR[status]}">'
+                f"{status_icon(status, 16)}{percent}</span></td>"
+            )
+        body += f"<tr><td>{escape(label)}</td>{tds}</tr>"
+    return f'<table class="mp-compare"><tr><th></th>{head}</tr>{body}</table>'
 
 
 def issue_card(check_label: str, status: str, quote: str, reason: str) -> str:

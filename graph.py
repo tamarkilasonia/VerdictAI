@@ -26,6 +26,7 @@ paused by interrupt() can be resumed later, even after Streamlit reruns.
 from __future__ import annotations
 
 import operator
+from concurrent.futures import ThreadPoolExecutor
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -55,11 +56,9 @@ from auditor import (
     CheckOutcome,
     CheckResult,
     Issue,
-    build_check_input,
     describe_problems,
     needs_revision,
     run_audit,
-    run_check,
 )
 from config import MAX_REVISIONS, get_settings
 from retrieval import Passage, get_evidence, is_georgian
@@ -79,7 +78,7 @@ class Turn:
     search_query: str = ""  # what Wikipedia was searched for (English)
     audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of the final answer
     answer_translation: str = ""  # English version of a Georgian answer (ranked + audited)
-    secondary_check: CheckOutcome | None = None  # hallucination check of SECONDARY, if they disagree
+    secondary_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of SECONDARY's answer
     revisions: list[str] = field(default_factory=list)  # corrected answers, oldest first
     original_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # before revising
     revise_error: str | None = None
@@ -125,7 +124,7 @@ class ChatState(TypedDict, total=False):
     search_query: str
     audit: dict[str, CheckOutcome]
     answer_translation: str
-    secondary_check: CheckOutcome | None
+    secondary_audit: dict[str, CheckOutcome]
     revisions: list[str]
     original_audit: dict[str, CheckOutcome]
     review_decision: str | None  # "revise" or "accept", set by human_review
@@ -147,7 +146,7 @@ def new_question_input(question: str) -> dict[str, Any]:
         "search_query": "",
         "audit": {},
         "answer_translation": "",
-        "secondary_check": None,
+        "secondary_audit": {},
         "revisions": [],
         "original_audit": {},
         "review_decision": None,
@@ -171,7 +170,7 @@ def turn_from_state(state: ChatState) -> Turn:
         search_query=state.get("search_query", ""),
         audit=state.get("audit", {}),
         answer_translation=state.get("answer_translation", ""),
-        secondary_check=state.get("secondary_check"),
+        secondary_audit=state.get("secondary_audit", {}),
         revisions=state.get("revisions", []),
         original_audit=state.get("original_audit", {}),
         revise_error=state.get("revise_error"),
@@ -301,47 +300,44 @@ def retrieve_evidence(state: ChatState) -> dict:
         return {**update, "evidence_error": f"Wikipedia unavailable ({type(error).__name__}); checked without evidence."}
 
 
-def _models_disagree(state: ChatState) -> bool:
-    agreement = state.get("agreement")
-    return agreement is not None and not agreement.agree
-
-
-def _check_secondary(state: ChatState) -> CheckOutcome:
-    """Hallucination check of SECONDARY's answer, against the same evidence.
-
-    When the two models disagree, at least one of them is wrong. Auditing only
-    PRIMARY left the user guessing: SECONDARY once claimed an invented author
-    for "The Knight in the Panther's Skin" while every check showed green.
-    """
-    text = state["secondary"].text
-    english = _translation(text) or text
-    return run_check(
-        "hallucination",
-        build_check_input("hallucination", state["question"], english, [], _evidence_texts(state)),
+def _audit_answer(state: ChatState, text: str, translation: str = "") -> dict[str, CheckOutcome]:
+    """The four checks on one answer; a Georgian answer is checked in English."""
+    english = translation or _translation(text)
+    return run_audit(
+        state["question"], english or text, _recent_history(state), _evidence_texts(state)
     )
 
 
 @timed("audit")
 def audit(state: ChatState) -> dict:
-    """Run the four checks on the final (possibly revised) answer, in parallel.
+    """Run the four checks on BOTH answers, so the user can compare them.
 
     A Georgian answer is audited in its English translation, because the
     auditor model misreads Georgian: in tests it read "შოტლანდიელმა" (Scottish)
     as "Dutch" and flagged a correct answer as contradicted, 3 times out of 3.
     With the translation the false alarm was gone, and a wrong answer was
     still caught 3 times out of 3.
-    If the models disagree, SECONDARY's answer gets a hallucination check too
-    (only once: a revision changes PRIMARY's answer, not SECONDARY's).
+
+    SECONDARY is audited only once: a revision changes PRIMARY's answer, not
+    SECONDARY's. Only PRIMARY's audit can pause the graph for a revision.
     """
     answer = _final_answer(state)
     # revise() clears the translation, so a revised answer is translated anew.
     translation = state.get("answer_translation") or _translation(answer)
-    result = run_audit(
-        state["question"], translation or answer, _recent_history(state), _evidence_texts(state)
+    secondary = state["secondary"]
+    audit_secondary = (
+        state["primary"].ok and secondary.ok and not state.get("secondary_audit")
     )
-    update: dict[str, Any] = {"audit": result, "answer_translation": translation}
-    if _models_disagree(state) and state.get("secondary_check") is None:
-        update["secondary_check"] = _check_secondary(state)
+    # Both audits at the same time: the user waits for one, not for two.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        primary_job = pool.submit(_audit_answer, state, answer, translation)
+        secondary_job = pool.submit(_audit_answer, state, secondary.text) if audit_secondary else None
+        update: dict[str, Any] = {
+            "audit": primary_job.result(),
+            "answer_translation": translation or "",
+        }
+        if secondary_job is not None:
+            update["secondary_audit"] = secondary_job.result()
     return update
 
 

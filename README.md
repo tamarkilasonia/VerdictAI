@@ -17,11 +17,9 @@ every answer is written in the language of the question.
 1. **Two answers in parallel.** Two AI services get the question plus the last few chat
    messages at the same time: **Google Gemini** (primary) and **Groq** (secondary).
 2. **Agreement check.** Both answers are embedded with the multilingual
-   `paraphrase-multilingual-MiniLM-L12-v2` (local, free) and compared with cosine similarity. At or above the threshold (default 0.80) you see the primary
-   answer with a *models agree* badge; below it you see both answers side by side
-   with a *models disagree* badge. The score is always shown. When they disagree,
-   the second answer also gets a hallucination check, so you can see which of the two
-   contradicts the evidence.
+   `paraphrase-multilingual-MiniLM-L12-v2` (local, free) and compared with cosine
+   similarity. Both answers are always shown side by side, under a *models agree* or
+   *models disagree* badge (threshold 0.80) with the score.
 3. **Evidence.** Gemini turns your question into a few English keywords (Wikipedia's
    search needs every word to match, so a whole sentence often finds nothing), and
    English Wikipedia is searched with them. The page introductions are split into
@@ -29,8 +27,10 @@ every answer is written in the language of the question.
    dropped. The top 3 passages become the evidence (shown with links). A Georgian
    answer is first translated into English, because English-to-English ranking is
    more precise.
-4. **Audit.** Four checks run in parallel on Groq, each returning a validated JSON result:
-   `score` (0–1) plus `issues` (`quote` + `reason`). A Georgian answer is audited in
+4. **Audit of both answers.** Four checks run in parallel on Groq for **each** answer,
+   each returning a validated JSON result: `score` (0–1) plus `issues` (`quote` +
+   `reason`). Every answer shows its own verdicts, and the audit panel compares them
+   in one table, so you can see which answer holds up. A Georgian answer is audited in
    its English translation (shown in the audit panel), because the auditor model
    misreads Georgian; see [How reliable is the audit?](#how-reliable-is-the-audit).
 
@@ -41,10 +41,11 @@ every answer is written in the language of the question.
    | Toxicity | answer | < 0.3 | 0.3–0.7 | ≥ 0.7 |
    | Intent alignment | recent conversation + answer | > 0.7 | 0.3–0.7 | ≤ 0.3 |
 
-5. **Human-in-the-loop revision.** If any check is *Serious*, the workflow **pauses** and
-   asks you. Click **Revise answer** and the primary model rewrites the answer using the
-   audit's issues and the evidence; the new answer is audited again (at most 2
-   revisions). The original and revised answers are shown side by side.
+5. **Human-in-the-loop revision.** If any check of the primary answer is *Serious*, the
+   workflow **pauses** and asks you. Click **Revise answer** and the primary model
+   rewrites its answer using the audit's issues and the evidence; the new answer is
+   audited again (at most 2 revisions). The original answer stays available under the
+   revised one.
 6. **Audit trail.** Every interaction is appended to `logs/audit_log.jsonl`
    (downloadable with the *Download log* button in the header).
 
@@ -58,7 +59,7 @@ flowchart TD
     G -->|no model answered| E([END])
     G --> C[compare<br/><i>embeddings + cosine similarity</i>]
     C --> R[retrieve_evidence<br/><i>Wikipedia search + re-ranking<br/>English keywords; Georgian answer translated</i>]
-    R --> A[audit<br/><i>4 checks in parallel<br/>+ 2nd answer if the models disagree</i>]
+    R --> A[audit<br/><i>4 checks on each answer,<br/>all in parallel</i>]
     A -->|"any check Serious and revisions < 2"| H[human_review<br/><i>interrupt: waits for the user</i>]
     A -->|otherwise| F[finalize<br/><i>memory + audit log</i>]
     H -->|Revise| V[revise<br/><i>primary fixes the answer</i>]
@@ -143,14 +144,14 @@ runs use the local copy.
 pytest -q
 ```
 
-71 small tests cover the pure functions: cosine similarity and the agreement threshold,
+72 small tests cover the pure functions: cosine similarity and the agreement threshold,
 parsing of the auditor's JSON (valid, fenced, invalid, out of range), verdict
 thresholds at their exact boundaries, the hallucination label rules, passage
 splitting, re-ranking and dropping off-topic evidence, the audit log (including "the
 API key is never written"), the graph's routing decisions, Georgian detection, the
 search keywords, the English translations for Georgian (ranking, audit, a new
-translation after a revision, quotes kept), the second answer's check when the models
-disagree, the two-service settings and the error messages (rate limit,
+translation after a revision, quotes kept), auditing both answers (once each, even after a
+revision), the two-service settings and the error messages (rate limit,
 wrong key, unknown model, busy service). They use fakes instead of real AI services
 and embeddings, so they need neither API keys nor internet.
 
@@ -226,17 +227,16 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
 
 - **Free tiers.** Gemini and Groq limit requests per minute and per day, and the limits
   change over time (Groq, November 2026: 1000 requests per day and 8000 tokens per
-  minute for each model). One question uses 7 requests (2 answers, 1 search query, 4 audit
-  checks), plus 1 translation for a Georgian answer and 1–2 more when the models
-  disagree; one audit uses about 3300 tokens. When a limit is hit, the
+  minute for each model). One question uses 11 requests (2 answers, 1 search query, 4 audit
+  checks for each answer), plus 2 translations for Georgian answers; the two audits use
+  about 6600 tokens. When a limit is hit, the
   app waits and retries (about 2, 4 and 8 s), and if it is still reached, it says so
   instead of crashing. Free tiers may also use what you send to improve their services,
   so do not type personal information.
 - **Internet required.** Both AI services and Wikipedia are online.
 - **Agreement ≠ truth.** Embeddings capture topic and meaning, not exact facts:
   "water boils at 100 °C" and "…at 90 °C" score 0.94. Two models can also agree on the
-  same mistake, or score just above the threshold while differing in a detail (then
-  the second answer is not checked). That is why the audit and the evidence exist.
+  same mistake. That is why both answers are audited against the evidence.
 - **Wikipedia coverage.** Only English Wikipedia, only page introductions, searched
   with a few keywords. Recent events, niche topics and non-encyclopedic questions
   (e.g. coding) often get weak or no evidence, and then the check falls back to
