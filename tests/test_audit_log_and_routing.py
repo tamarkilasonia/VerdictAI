@@ -108,6 +108,11 @@ def test_a_passing_answer_is_shown_without_review():
     assert route_after_audit(routing_state(passing_audit(), failing_audit())) == "finalize"
 
 
+def test_no_review_when_the_auditor_could_not_run():
+    unchecked = {"hallucination": CheckOutcome("hallucination", None, error="daily limit")}
+    assert route_after_audit(routing_state(unchecked, unchecked)) == "finalize"
+
+
 def test_no_more_review_after_max_revisions():
     state = routing_state(failing_audit(), failing_audit(), ["r"] * MAX_REVISIONS)
     assert route_after_audit(state) == "finalize"
@@ -138,8 +143,36 @@ def test_both_failing_gives_an_honest_dont_know_in_the_question_language():
     georgian = Turn("როდის დაეცა ბერლინის კედელი?", ModelAnswer("p", text="1975."),
                     ModelAnswer("s", text="1980."), audit=failing_audit(),
                     secondary_audit=failing_audit())
-    assert english.shown is None and english.reply.startswith("I don't know")
-    assert georgian.shown is None and georgian.reply.startswith("ამ კითხვაზე სანდო პასუხი არ ვიცი")
+    assert english.shown is None
+    assert english.reply == (
+        "The AI answers did not pass the fact check. So I don't know a reliable answer "
+        "to this (see the analysis on the right)."
+    )
+    assert georgian.shown is None and "სანდო პასუხი არ ვიცი" in georgian.reply
+
+
+def test_wikipedia_text_is_shown_when_no_ai_answer_passed():
+    wiki = Passage("ბედნიერი ერი", "https://ka.wikipedia.org/wiki/x",
+                   "სიმღერის ტექსტი შექმნილია ილია ჭავჭავაძის ამავე სახელწოდების ლექსის მიხედვით.")
+    turn = Turn("„ბედნიერი ერი“ ვინაა ავტორი?", ModelAnswer("p", text="აკაკი წერეთელი."),
+                ModelAnswer("s", text="არ ვიცი."), audit=failing_audit(),
+                secondary_audit=failing_audit(), wiki_answer=wiki)
+    assert turn.shown is None
+    assert turn.reply == (
+        "AI-ების პასუხებმა ფაქტების შემოწმება ვერ გაიარა. აი, რა წერია Wikipedia-ში:\n\n"
+        "> სიმღერის ტექსტი შექმნილია ილია ჭავჭავაძის ამავე სახელწოდების ლექსის მიხედვით.\n\n"
+        "— [ბედნიერი ერი](https://ka.wikipedia.org/wiki/x)"
+    )
+
+
+def test_unchecked_answers_are_replaced_by_wikipedia_with_the_reason():
+    unchecked = {"hallucination": CheckOutcome("hallucination", None, error="rate limit")}
+    wiki = Passage("Berlin Wall", "https://en.wikipedia.org/wiki/Berlin_Wall", "It fell in 1989.")
+    turn = Turn("When did the Berlin Wall fall?", ModelAnswer("p", text="1975."),
+                ModelAnswer("s", text="1989."), audit=unchecked,
+                secondary_audit=unchecked, wiki_answer=wiki)
+    assert turn.reply.startswith("The AI answers could not be fact-checked right now")
+    assert "> It fell in 1989." in turn.reply
 
 
 def test_review_decision_routes():

@@ -69,6 +69,8 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
         "final_answer": turn.final_answer,
         # Which answer the user saw; None = "I don't know" (no answer passed).
         "shown_answer_model": turn.shown[0] if turn.shown else None,
+        # Wikipedia's own answer, shown when no AI answer passed.
+        "wikipedia_answer_url": turn.wiki_answer.url if turn.wiki_answer and not turn.shown else None,
         "secondary_english_answer": turn.secondary.english_text or None,
         "agreement_score": turn.agreement.score if turn.agreement else None,
         "search_query": turn.search_query,

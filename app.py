@@ -106,7 +106,9 @@ def render_turn(turn: Turn, index: int) -> None:
     render_user_bubble(turn.question, str(index))
     with st.container(key=f"msg-bot-{index}"):
         if turn.shown is None:
-            st.html(ui.bubble_head(ui.pill("No reliable answer", "fail")))
+            # No AI answer passed: Wikipedia's own text, or "I don't know".
+            pill = ui.pill("Answer from Wikipedia", "info") if turn.wiki_answer else ui.pill("No reliable answer", "fail")
+            st.html(ui.bubble_head(pill))
             st.markdown(turn.reply)
             return
         model, text = turn.shown
@@ -132,14 +134,15 @@ def render_review_controls(turn: Turn) -> str | None:
     remaining = MAX_REVISIONS - len(turn.revisions)
     st.html(
         ui.callout(
-            f"Neither answer passed the fact check. Ask {turn.primary.model} to fix its "
-            f"answer using the audit and the evidence? ({remaining} revision(s) left)"
+            f"No AI answer passed the fact check. Ask {turn.primary.model} to write a new "
+            f"answer from the audit and the evidence? ({remaining} revision(s) left)"
         )
     )
     revise_column, keep_column, _ = st.columns([1.2, 1.4, 2])
     if revise_column.button("Revise answer", type="primary", icon=":material/edit:", width="stretch"):
         return "revise"
-    if keep_column.button("Keep “I don't know”", width="stretch"):
+    keep_label = "Keep the Wikipedia answer" if turn.wiki_answer else "Keep “I don't know”"
+    if keep_column.button(keep_label, width="stretch"):
         return "accept"
     return None
 
@@ -161,17 +164,18 @@ def render_comparison(turn: Turn) -> None:
         for check in CHECK_LABELS
     ]
     shown = turn.shown[0] if turn.shown else None
-    verdict = (
-        f"Shown in the chat: <b>{ui.escape(shown)}</b>"
-        if shown
-        else "<b>No answer passed</b>: the chat says “I don't know”."
-    )
+    if shown:
+        verdict = f"Shown in the chat: <b>{ui.escape(shown)}</b>"
+    elif turn.wiki_answer:
+        verdict = "<b>No AI answer passed</b>: the chat shows Wikipedia's own text."
+    else:
+        verdict = "<b>No AI answer passed</b> and Wikipedia had nothing relevant: the chat says “I don't know”."
     st.html(
         '<div class="mp-section">Comparison</div>'
         + ui.comparison_table([model for model, _, _ in candidates], rows)
         + '<div class="mp-note">Hallucination, bias, toxicity: lower is better. '
-        "Intent alignment: higher is better. An answer is shown only if no check is "
-        f"Serious.</div><div class=\"mp-muted\" style=\"margin-top:8px\">{verdict}</div>"
+        "Intent alignment: higher is better. An AI answer is shown only if its facts "
+        f"were checked and no check is Serious.</div><div class=\"mp-muted\" style=\"margin-top:8px\">{verdict}</div>"
         f'<div style="margin-top:6px">{agreement_pill(turn)}</div>'
     )
 
@@ -185,7 +189,10 @@ def render_answers(turn: Turn) -> None:
         else:
             # Hidden because a check failed, or because both passed and the other
             # had fewer warnings / unverified details (auditor.pick_answer).
-            reason = failed_checks(audit) or "both passed, the other was checked better"
+            if not (audit.get("hallucination") and audit["hallucination"].result):
+                reason = "its facts could not be checked"
+            else:
+                reason = failed_checks(audit) or "both passed, the other was checked better"
             label = f"{model} · hidden: {reason}"
         with st.expander(label):
             st.markdown(text)
