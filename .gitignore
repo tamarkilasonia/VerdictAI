@@ -1,0 +1,16 @@
+# Secrets: never commit the real .env (only .env.example)
+.env
+
+# Local virtual environment
+.venv/
+
+# Audit trail written at runtime (may contain user questions)
+logs/
+
+# Python / tooling caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
