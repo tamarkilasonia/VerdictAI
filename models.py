@@ -19,12 +19,14 @@ from config import ModelSpec
 # from freezing the app forever.
 REQUEST_TIMEOUT_SECONDS = 60
 
-# Only temporary problems are worth retrying: the service could not be reached
-# or asked us to slow down (free tiers allow a few requests per minute).
+# Only temporary problems are worth retrying: the service could not be reached,
+# asked us to slow down (free tiers allow a few requests per minute) or was
+# briefly overloaded (Gemini's free tier often answers "503 busy" at peak times).
 # Errors such as a wrong key or model name would just fail again.
 RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
     openai.RateLimitError,
     openai.APIConnectionError,  # also covers timeouts
+    openai.InternalServerError,  # 5xx: the service's own temporary problem
 )
 
 
@@ -54,7 +56,12 @@ def get_chat_model(spec: ModelSpec, *, temperature: float = 0.7, json_mode: bool
     return model.with_retry(
         retry_if_exception_type=RETRYABLE_ERRORS,
         wait_exponential_jitter=True,
-        stop_after_attempt=3,
+        # Waits of about 2, 4 and 8 seconds. Groq's free tier allows 8000 tokens
+        # per minute per model and one audit uses about 3300, so an audit, its
+        # re-audit and the next question can hit the limit; ~14 s is usually
+        # enough for the per-minute budget to refill (shorter waits were not).
+        exponential_jitter_params={"initial": 2},
+        stop_after_attempt=4,
     )
 
 
@@ -91,4 +98,6 @@ def friendly_error(error: Exception, spec: ModelSpec) -> str:
         return f"Cannot reach {spec.base_url}. Check your internet connection."
     if isinstance(error, openai.BadRequestError):
         return f"{name!r} rejected the request: {error.message}"
+    if isinstance(error, openai.InternalServerError):
+        return f"{name!r} is busy right now (the service is overloaded). Try again in a minute."
     return f"{name!r} failed: {type(error).__name__}: {error}"

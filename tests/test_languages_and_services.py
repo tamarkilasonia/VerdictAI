@@ -81,6 +81,7 @@ def api_error(cls, status: int):
         (api_error(openai.RateLimitError, 429), "Free usage limit"),
         (api_error(openai.AuthenticationError, 401), "API key"),
         (api_error(openai.NotFoundError, 404), "not found"),
+        (api_error(openai.InternalServerError, 503), "busy"),
     ],
 )
 def test_friendly_error_messages(error, expected):
