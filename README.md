@@ -26,11 +26,15 @@ every answer is written in the language of the question.
    short passages and **re-ranked** by similarity to the answer; off-topic passages are
    dropped. The top 3 passages become the evidence (shown with links). A Georgian
    answer is first translated into English, because English-to-English ranking is
-   more precise. For a Georgian question, the same pages on **Georgian Wikipedia**
-   (found through Wikipedia's language links) are shown too, so you can read the
-   sources in Georgian. The check itself uses the English passages: Georgian
-   introductions are much shorter (the Georgian *Penicillin* introduction says nothing
-   about its discovery), and the auditor misreads Georgian.
+   more precise. For a Georgian question, **Georgian Wikipedia** is used too, in two
+   ways: the same pages as the English evidence (through Wikipedia's language links)
+   are shown so you can read the sources in Georgian, and Georgian Wikipedia is also
+   searched directly with Georgian keywords, because Georgian topics are often missing
+   in English (e.g. the village of Shrosha). Pages found only in Georgian are translated
+   into English by Gemini and given to the auditor as evidence too (marked
+   *შემოწმებაშიც*). Otherwise the check relies on English passages: Georgian
+   introductions are usually shorter (the Georgian *Penicillin* introduction says
+   nothing about its discovery), and the auditor misreads Georgian text.
 4. **Audit of both answers.** Four checks run in parallel on Groq for **each** answer,
    each returning a validated JSON result: `score` (0–1) plus `issues` (`quote` +
    `reason`). Every answer shows its own verdicts, and the audit panel compares them
@@ -148,15 +152,15 @@ runs use the local copy.
 pytest -q
 ```
 
-75 small tests cover the pure functions: cosine similarity and the agreement threshold,
+76 small tests cover the pure functions: cosine similarity and the agreement threshold,
 parsing of the auditor's JSON (valid, fenced, invalid, out of range), verdict
 thresholds at their exact boundaries, the hallucination label rules, passage
 splitting, re-ranking and dropping off-topic evidence, the audit log (including "the
 API key is never written"), the graph's routing decisions, Georgian detection, the
 search keywords, the English translations for Georgian (ranking, audit, a new
 translation after a revision, quotes kept), auditing both answers (once each, even after a
-revision), the Georgian Wikipedia sources (only for Georgian questions, never breaking
-the check), the two-service settings and the error messages (rate limit,
+revision), the Georgian Wikipedia sources (only for Georgian questions, Georgian-only
+pages translated for the auditor, never breaking the check), the two-service settings and the error messages (rate limit,
 wrong key, unknown model, busy service). They use fakes instead of real AI services
 and embeddings, so they need neither API keys nor internet.
 
@@ -233,7 +237,8 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
 - **Free tiers.** Gemini and Groq limit requests per minute and per day, and the limits
   change over time (Groq, November 2026: 1000 requests per day and 8000 tokens per
   minute for each model). One question uses 11 requests (2 answers, 1 search query, 4 audit
-  checks for each answer), plus 2 translations for Georgian answers; the two audits use
+  checks for each answer), plus up to 6 for a Georgian question (2 answer
+  translations, Georgian keywords, up to 3 translations of Georgian-only pages); the two audits use
   about 6600 tokens. When a limit is hit, the
   app waits and retries (about 2, 4 and 8 s), and if it is still reached, it says so
   instead of crashing. Free tiers may also use what you send to improve their services,
@@ -242,8 +247,8 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
 - **Agreement ≠ truth.** Embeddings capture topic and meaning, not exact facts:
   "water boils at 100 °C" and "…at 90 °C" score 0.94. Two models can also agree on the
   same mistake. That is why both answers are audited against the evidence.
-- **Wikipedia coverage.** The check uses only English Wikipedia (Georgian pages are
-  shown, not checked) and only page introductions, searched
+- **Wikipedia coverage.** The check uses English Wikipedia plus translated pages that
+  exist only on Georgian Wikipedia, and only page introductions, searched
   with a few keywords. Recent events, niche topics and non-encyclopedic questions
   (e.g. coding) often get weak or no evidence, and then the check falls back to
   general knowledge.

@@ -205,33 +205,34 @@ def render_issues(turn: Turn) -> None:
 
 
 def render_evidence(turn: Turn) -> None:
-    """The Wikipedia passages the hallucination check was judged against."""
+    """The Wikipedia passages: Georgian ones to read, English ones the check used."""
     html = ""
     if turn.georgian_sources:
-        # Georgian question: the same pages on Georgian Wikipedia, to read in
-        # Georgian. The check itself used the English passages below.
         html += '<div class="mp-section">წყაროები · ქართული Wikipedia</div>'
-        html += "".join(
-            ui.evidence_card(p.title, p.url, p.text, p.score, "გახსენი Wikipedia-ზე →")
-            for p in turn.georgian_sources
-        )
+        for p in turn.georgian_sources:
+            # Pages English Wikipedia lacks were translated and checked too.
+            title = f"{p.title} · შემოწმებაშიც" if p.english_text else p.title
+            html += ui.evidence_card(title, p.url, p.text, p.score, "გახსენი Wikipedia-ზე →")
         html += (
-            '<div class="mp-muted">შემოწმებისთვის გამოყენებულია ინგლისური Wikipedia, '
-            "რადგან იქ მეტი ფაქტია (ქვემოთ).</div>"
+            '<div class="mp-muted">შემოწმება ძირითადად ინგლისურ Wikipedia-ს ეყრდნობა '
+            "(ქვემოთ), რადგან იქ მეტი ფაქტია. „შემოწმებაშიც“ ნიშნავს, რომ ეს ქართული "
+            "სტატია ინგლისურ Wikipedia-ში არ იყო, ამიტომ ითარგმნა და აუდიტორმაც "
+            "გამოიყენა.</div>"
         )
     html += '<div class="mp-section">Evidence used for the check · English Wikipedia</div>'
     if turn.search_query and turn.search_query != turn.question:
-        # A Georgian question was translated: show what was actually searched.
         html += f'<div class="mp-muted">Searched for: “{ui.escape(turn.search_query)}”</div>'
     if turn.evidence_error:
         html += f'<div class="mp-muted">{ui.escape(turn.evidence_error)}</div>'
     elif not turn.evidence:
-        html += '<div class="mp-muted">No relevant passages found; checked without evidence.</div>'
+        html += '<div class="mp-muted">No relevant English passages found.</div>'
     else:
         # Relevance = cosine similarity to the answer (the re-ranking score).
         html += "".join(
             ui.evidence_card(p.title, p.url, p.text, p.score) for p in turn.evidence
         )
+    if not turn.evidence and not any(p.english_text for p in turn.georgian_sources):
+        html += '<div class="mp-muted">Checked without evidence.</div>'
     st.html(html)
 
 

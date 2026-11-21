@@ -127,18 +127,21 @@ def revise_answer(
 # written by Galaktion Tabidze." found no page, and "what is the capital of
 # Kutaisi" found a singer. PRIMARY turns the question into a few English
 # keywords instead (English Wikipedia is also far richer than Georgian).
+# For a Georgian question, Georgian Wikipedia is searched too (with Georgian
+# keywords): Georgian topics such as a village are often missing in English.
 SEARCH_QUERY_PROMPT = (
-    "Write a short English Wikipedia search query (2 to 6 words) for the topic "
+    "Write a short {language} Wikipedia search query (2 to 6 words) for the topic "
     "of the user's message: the person, work, place or event it is about. Do not "
     "answer the message. Reply with the query only.\n"
-    "Example: 'მე როგორც ვიცი ვეფხისტყაოსანი გალაკტიონმა დაწერა' -> "
-    "The Knight in the Panther's Skin"
+    "Examples for 'მე როგორც ვიცი ვეფხისტყაოსანი გალაკტიონმა დაწერა': "
+    "in English -> The Knight in the Panther's Skin; in Georgian -> ვეფხისტყაოსანი"
 )
 
 
-def make_search_query(spec: ModelSpec, question: str) -> str:
-    """A few English keywords for the Wikipedia search (question in any language)."""
-    messages = [SystemMessage(SEARCH_QUERY_PROMPT), HumanMessage(question)]
+def make_search_query(spec: ModelSpec, question: str, language: str = "English") -> str:
+    """A few keywords for the Wikipedia search, in `language` (English or Georgian)."""
+    prompt = SEARCH_QUERY_PROMPT.format(language=language)
+    messages = [SystemMessage(prompt), HumanMessage(question)]
     return _unquote(ask_model(spec, messages, temperature=0.0))
 
 

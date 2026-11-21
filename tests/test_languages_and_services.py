@@ -98,7 +98,8 @@ def test_friendly_error_messages(error, expected):
 def run_retrieve(monkeypatch, question, make_query):
     searched = []
     monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
-    monkeypatch.setattr(graph, "make_search_query", make_query)
+    monkeypatch.setattr(graph, "make_search_query", lambda spec, q, language: make_query(spec, q))
+    monkeypatch.setattr(graph, "get_georgian_sources", lambda *args: [])
     monkeypatch.setattr(graph, "get_evidence", lambda query, answer, ua: searched.append(query) or [])
     state = {
         "question": question,
@@ -172,7 +173,8 @@ def test_georgian_answer_is_ranked_and_audited_in_english(monkeypatch):
     ranked = []
     monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
     monkeypatch.setattr(graph, "translate_to_english", lambda spec, text: ENGLISH[text])
-    monkeypatch.setattr(graph, "make_search_query", lambda spec, q: "Penicillin")
+    monkeypatch.setattr(graph, "make_search_query", lambda spec, q, language: "Penicillin")
+    monkeypatch.setattr(graph, "get_georgian_sources", lambda *args: [])
     monkeypatch.setattr(
         graph, "get_evidence", lambda query, answer, ua: ranked.append((query, answer)) or []
     )
@@ -287,12 +289,16 @@ def test_only_answer_is_audited_once_when_primary_failed(monkeypatch):
 def run_retrieve_with_sources(monkeypatch, question, fetch_sources):
     asked = []
 
-    def fake_sources(titles, answer, ua):
-        asked.append(titles)
-        return fetch_sources(titles, answer, ua)
+    def fake_sources(titles, georgian_query, answer, ua):
+        asked.append((titles, georgian_query))
+        return fetch_sources(titles, georgian_query, answer, ua)
 
     monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
-    monkeypatch.setattr(graph, "make_search_query", lambda spec, q: "Berlin Wall")
+    monkeypatch.setattr(
+        graph,
+        "make_search_query",
+        lambda spec, q, language: "ბერლინის კედელი" if language == "Georgian" else "Berlin Wall",
+    )
     monkeypatch.setattr(graph, "translate_to_english", lambda spec, text: "It fell in 1989.")
     monkeypatch.setattr(
         graph, "get_evidence", lambda query, answer, ua: [Passage("Berlin Wall", "en-url", "fell 1989")]
@@ -312,7 +318,8 @@ def test_georgian_question_also_gets_georgian_wikipedia_sources(monkeypatch):
     update, asked = run_retrieve_with_sources(
         monkeypatch, "როდის დაეცა ბერლინის კედელი?", lambda *args: georgian
     )
-    assert asked == [["Berlin Wall"]]  # the same pages as the English evidence
+    # The same pages as the English evidence, plus a Georgian keyword search.
+    assert asked == [(["Berlin Wall"], "ბერლინის კედელი")]
     assert update["georgian_sources"] == georgian
     assert update["evidence"][0].url == "en-url"  # the check still uses English
 
@@ -330,3 +337,20 @@ def test_failed_georgian_sources_do_not_affect_the_check(monkeypatch):
 
     update, _ = run_retrieve_with_sources(monkeypatch, "როდის დაეცა ბერლინის კედელი?", broken)
     assert update["evidence"] and "evidence_error" not in update
+
+
+def test_georgian_only_page_is_translated_for_the_auditor(monkeypatch):
+    # Shrosha (a village) has a Georgian Wikipedia page but no English one.
+    shrosha = Passage("შროშა", "ka-url", "შროშა — სოფელი…", only_in_georgian=True)
+    linked = Passage("ბერლინის კედელი", "ka-url-2", "ბერლინის კედელი…")
+    update, _ = run_retrieve_with_sources(
+        monkeypatch, "სად არის სოფელი შროშა?", lambda *args: [shrosha, linked]
+    )
+    # translate_to_english is faked to return "It fell in 1989." for any text
+    assert shrosha.english_text == "It fell in 1989."
+    assert linked.english_text == ""  # same topic as the English evidence: not repeated
+    state = {"evidence": update["evidence"], "georgian_sources": update["georgian_sources"]}
+    assert graph._evidence_texts(state) == [
+        "[Berlin Wall] fell 1989",
+        "[შროშა, Georgian Wikipedia, translated] It fell in 1989.",
+    ]
