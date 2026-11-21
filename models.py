@@ -31,6 +31,21 @@ RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 
+def is_daily_limit(error: BaseException) -> bool:
+    """True for a used-up DAILY limit (Groq: "tokens per day (TPD)").
+
+    Waiting seconds does not help there: Groq frees it over hours (it said
+    "try again in 6m56s"). The auditor has 200,000 tokens per day; one
+    question's two audits use about 6,600.
+    """
+    return isinstance(error, openai.RateLimitError) and "per day" in str(error)
+
+
+def should_retry(error: BaseException) -> bool:
+    """Retry temporary problems, but not a used-up daily limit."""
+    return isinstance(error, RETRYABLE_ERRORS) and not is_daily_limit(error)
+
+
 def get_chat_model(spec: ModelSpec, *, temperature: float = 0.7, json_mode: bool = False) -> Runnable:
     """Create a chat model from a ModelSpec (name + base URL + key from .env).
 
@@ -55,7 +70,7 @@ def get_chat_model(spec: ModelSpec, *, temperature: float = 0.7, json_mode: bool
         **options,
     )
     return model.with_retry(
-        retry_if_exception_type=RETRYABLE_ERRORS,
+        retry_if_exception_type=should_retry,
         wait_exponential_jitter=True,
         # Waits of about 2, 4, 8 and 16 seconds (~30 s in total). Groq's free
         # tier allows 8000 tokens per minute per model, and for Qwen only 1000
@@ -85,6 +100,11 @@ def friendly_error(error: Exception, spec: ModelSpec) -> str:
         return (
             f"The API key for {name!r} was rejected. Check it in .env "
             "(PRIMARY_API_KEY for Gemini, SECONDARY_API_KEY for Groq)."
+        )
+    if is_daily_limit(error):
+        return (
+            f"Today's free limit for {name!r} is used up. It frees up gradually over "
+            "the next hours; until then answers cannot be fact-checked."
         )
     if isinstance(error, openai.RateLimitError):
         return (
