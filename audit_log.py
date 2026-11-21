@@ -71,6 +71,7 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
         "search_query": turn.search_query,
         "answer_translation": turn.answer_translation or None,
         "evidence_urls": sorted({passage.url for passage in turn.evidence}),
+        "georgian_source_urls": sorted({passage.url for passage in turn.georgian_sources}) or None,
         "audit_scores": _scores(turn.audit),
         "secondary_audit_scores": _scores(turn.secondary_audit) or None,
         "original_audit_scores": _scores(turn.original_audit) if turn.revisions else None,

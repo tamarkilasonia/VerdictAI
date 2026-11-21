@@ -15,7 +15,7 @@ from answers import ModelAnswer
 from auditor import CheckOutcome, CheckResult
 from config import ModelSpec, Settings
 from models import friendly_error
-from retrieval import is_georgian
+from retrieval import Passage, is_georgian
 
 SPEC = ModelSpec("gemini-test", "https://gemini.invalid", "secret")
 SETTINGS = Settings(
@@ -279,3 +279,54 @@ def test_only_answer_is_audited_once_when_primary_failed(monkeypatch):
     update, audited = run_both_audits(monkeypatch, primary_ok=False)
     assert audited == ["Supran Makvsadze wrote it."]
     assert "secondary_audit" not in update
+
+
+# ------------------------------------------- Georgian Wikipedia sources (shown only)
+
+
+def run_retrieve_with_sources(monkeypatch, question, fetch_sources):
+    asked = []
+
+    def fake_sources(titles, answer, ua):
+        asked.append(titles)
+        return fetch_sources(titles, answer, ua)
+
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr(graph, "make_search_query", lambda spec, q: "Berlin Wall")
+    monkeypatch.setattr(graph, "translate_to_english", lambda spec, text: "It fell in 1989.")
+    monkeypatch.setattr(
+        graph, "get_evidence", lambda query, answer, ua: [Passage("Berlin Wall", "en-url", "fell 1989")]
+    )
+    monkeypatch.setattr(graph, "get_georgian_sources", fake_sources)
+    state = {
+        "question": question,
+        "primary": ModelAnswer("p", text="answer"),
+        "secondary": ModelAnswer("s", text="answer"),
+        "latency": {},
+    }
+    return graph.retrieve_evidence(state), asked
+
+
+def test_georgian_question_also_gets_georgian_wikipedia_sources(monkeypatch):
+    georgian = [Passage("ბერლინის კედელი", "ka-url", "ბერლინის კედელი…")]
+    update, asked = run_retrieve_with_sources(
+        monkeypatch, "როდის დაეცა ბერლინის კედელი?", lambda *args: georgian
+    )
+    assert asked == [["Berlin Wall"]]  # the same pages as the English evidence
+    assert update["georgian_sources"] == georgian
+    assert update["evidence"][0].url == "en-url"  # the check still uses English
+
+
+def test_english_question_gets_no_georgian_sources(monkeypatch):
+    update, asked = run_retrieve_with_sources(
+        monkeypatch, "When did the Berlin Wall fall?", lambda *args: []
+    )
+    assert asked == [] and "georgian_sources" not in update
+
+
+def test_failed_georgian_sources_do_not_affect_the_check(monkeypatch):
+    def broken(*args):
+        raise ConnectionError("ka.wikipedia.org unreachable")
+
+    update, _ = run_retrieve_with_sources(monkeypatch, "როდის დაეცა ბერლინის კედელი?", broken)
+    assert update["evidence"] and "evidence_error" not in update

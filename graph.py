@@ -61,7 +61,7 @@ from auditor import (
     run_audit,
 )
 from config import MAX_REVISIONS, get_settings
-from retrieval import Passage, get_evidence, is_georgian
+from retrieval import Passage, get_evidence, get_georgian_sources, is_georgian
 
 
 @dataclass
@@ -74,6 +74,7 @@ class Turn:
     agreement: Agreement | None = None
     agreement_error: str | None = None
     evidence: list[Passage] = field(default_factory=list)
+    georgian_sources: list[Passage] = field(default_factory=list)  # shown only, not audited
     evidence_error: str | None = None
     search_query: str = ""  # what Wikipedia was searched for (English)
     audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of the final answer
@@ -120,6 +121,7 @@ class ChatState(TypedDict, total=False):
     agreement: Agreement | None
     agreement_error: str | None
     evidence: list[Passage]
+    georgian_sources: list[Passage]
     evidence_error: str | None
     search_query: str
     audit: dict[str, CheckOutcome]
@@ -142,6 +144,7 @@ def new_question_input(question: str) -> dict[str, Any]:
         "agreement": None,
         "agreement_error": None,
         "evidence": [],
+        "georgian_sources": [],
         "evidence_error": None,
         "search_query": "",
         "audit": {},
@@ -166,6 +169,7 @@ def turn_from_state(state: ChatState) -> Turn:
         agreement=state.get("agreement"),
         agreement_error=state.get("agreement_error"),
         evidence=state.get("evidence", []),
+        georgian_sources=state.get("georgian_sources", []),
         evidence_error=state.get("evidence_error"),
         search_query=state.get("search_query", ""),
         audit=state.get("audit", {}),
@@ -291,13 +295,24 @@ def retrieve_evidence(state: ChatState) -> dict:
     query = _search_query(state["question"])
     translation = _translation(answer)
     update: dict[str, Any] = {"search_query": query, "answer_translation": translation}
+    user_agent = get_settings().wiki_user_agent
     try:
-        evidence = get_evidence(query, translation or answer, get_settings().wiki_user_agent)
-        return {**update, "evidence": evidence}
+        evidence = get_evidence(query, translation or answer, user_agent)
     # No internet, Wikipedia down, timeout...: the audit simply continues
     # without evidence, and the UI says so.
     except Exception as error:  # noqa: BLE001
         return {**update, "evidence_error": f"Wikipedia unavailable ({type(error).__name__}); checked without evidence."}
+    update["evidence"] = evidence
+    if is_georgian(state["question"]) and evidence:
+        # The same pages on Georgian Wikipedia, for the user to read. Only a
+        # nice extra: if it fails, the check is not affected.
+        try:
+            update["georgian_sources"] = get_georgian_sources(
+                [passage.title for passage in evidence], answer, user_agent
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return update
 
 
 def _audit_answer(state: ChatState, text: str, translation: str = "") -> dict[str, CheckOutcome]:

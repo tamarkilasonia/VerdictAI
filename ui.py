@@ -219,12 +219,14 @@ def issue_card(check_label: str, status: str, quote: str, reason: str) -> str:
     )
 
 
-def evidence_card(title: str, url: str, text: str, relevance: float) -> str:
+def evidence_card(
+    title: str, url: str, text: str, relevance: float, link_text: str = "Open on Wikipedia →"
+) -> str:
     return (
         '<details class="mp-evidence">'
         f'<summary><span>{escape(title)}</span><span class="mp-rel">relevance {relevance:.2f}</span></summary>'
         f"<p>{escape(text)}</p>"
-        f'<a href="{escape(url)}" target="_blank" rel="noopener">Open on Wikipedia →</a>'
+        f'<a href="{escape(url)}" target="_blank" rel="noopener">{escape(link_text)}</a>'
         "</details>"
     )
 
