@@ -101,8 +101,8 @@ def get_settings() -> Settings:
     groq_key = _api_key("SECONDARY_API_KEY", "https://console.groq.com")
 
     settings = Settings(
-        primary=ModelSpec(_text("PRIMARY_MODEL", "gemini-2.5-flash"), gemini_url, gemini_key),
-        secondary=ModelSpec(_text("SECONDARY_MODEL", "llama-3.3-70b-versatile"), groq_url, groq_key),
+        primary=ModelSpec(_text("PRIMARY_MODEL", "gemini-3.1-flash-lite"), gemini_url, gemini_key),
+        secondary=ModelSpec(_text("SECONDARY_MODEL", "qwen/qwen3.8-27b"), groq_url, groq_key),
         auditor=ModelSpec(_text("AUDITOR_MODEL", "openai/gpt-oss-120b"), groq_url, groq_key),
         agreement_threshold=_number("AGREEMENT_THRESHOLD", 0.80, float),
         history_messages=_number("HISTORY_MESSAGES", 6, int),

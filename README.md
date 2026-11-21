@@ -92,6 +92,13 @@ Requirements: Python 3.11+ (3.12 recommended), an internet connection and two fr
 Both are reached through their **OpenAI-compatible API**, so one client library
 (`langchain-openai`) talks to both. No credit card is needed for either free tier.
 
+The default models were chosen by testing them (November 2026):
+`gemini-3.1-flash-lite` answers in 1–3 s with good Georgian (`gemini-3.5-flash` was as
+good but took 20–44 s per answer); `qwen/qwen3.8-27b` is the second opinion (Groq
+retired `llama-3.3-70b-versatile`); `openai/gpt-oss-120b` is the auditor. Model names
+change over time: if one stops working, pick a current one in Google AI Studio or the
+Groq console and put it in `.env`.
+
 The project first ran on two small local models (Ollama: `llama3.2`, `qwen2.5:3b`).
 They could not write Georgian (tested: their Georgian answers were nonsense), so the
 models moved to these two services. The model factory still works with any
@@ -118,10 +125,10 @@ runs use the local copy.
 | Variable | Default | Meaning |
 |---|---|---|
 | `PRIMARY_API_KEY` | *(required)* | Gemini key. Never logged or printed |
-| `PRIMARY_MODEL` | `gemini-2.5-flash` | Main answer, revisions and the Georgian → English search query |
+| `PRIMARY_MODEL` | `gemini-3.1-flash-lite` | Main answer, revisions and the Georgian → English search query |
 | `PRIMARY_BASE_URL` | Gemini's OpenAI-compatible URL | Where AI 1 is reached |
 | `SECONDARY_API_KEY` | *(required)* | Groq key. Never logged or printed |
-| `SECONDARY_MODEL` | `llama-3.3-70b-versatile` | Second opinion for the agreement check |
+| `SECONDARY_MODEL` | `qwen/qwen3.8-27b` | Second opinion for the agreement check |
 | `AUDITOR_MODEL` | `openai/gpt-oss-120b` | Runs the four audit checks (on Groq) |
 | `SECONDARY_BASE_URL` | Groq's OpenAI-compatible URL | Where AI 2 is reached |
 | `AGREEMENT_THRESHOLD` | `0.80` | Cosine similarity at or above which the models "agree" |
