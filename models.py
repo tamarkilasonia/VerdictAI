@@ -1,90 +1,55 @@
-"""Chat model factory: the only module that knows which provider we talk to.
+"""Chat model factory: the only module that knows how we talk to the AI services.
 
-Every other module asks for a model by name and gets back something it can
-`.invoke(messages)`. Switching provider means editing .env, not this code.
+Gemini and Groq both offer an OpenAI-compatible API, so one client
+(LangChain's ChatOpenAI via init_chat_model) reaches both: only the base URL,
+the key and the model name differ, and those come from .env.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-import httpx  # the HTTP client used by the Ollama client; installed with langchain-ollama
+import openai
 from langchain.chat_models import init_chat_model
 from langchain_core.runnables import Runnable
 
-from config import Settings, get_settings
+from config import ModelSpec
 
-# A local 3B model can be slow on a laptop, so allow a generous time limit.
-# Without one, a stuck server would freeze the app forever.
-REQUEST_TIMEOUT_SECONDS = 120
+# Cloud models usually answer in seconds; the limit only stops a stuck request
+# from freezing the app forever.
+REQUEST_TIMEOUT_SECONDS = 60
 
-# Only temporary problems are worth retrying: the server could not be reached
-# or is rate-limiting us. Errors such as "model not found" would just fail
-# again. A slow answer (read timeout) is not retried either: a slow local
-# model would only be slow again, tripling the wait.
+# Only temporary problems are worth retrying: the service could not be reached
+# or asked us to slow down (free tiers allow a few requests per minute).
+# Errors such as a wrong key or model name would just fail again.
 RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
-    ConnectionError,  # the Ollama client raises this when the server is down
-    httpx.ConnectError,
-    httpx.ConnectTimeout,
+    openai.RateLimitError,
+    openai.APIConnectionError,  # also covers timeouts
 )
-try:  # The openai package is only present if you switch to an OpenAI-style provider.
-    import openai
-
-    RETRYABLE_ERRORS += (openai.RateLimitError, openai.APIConnectionError)
-except ImportError:
-    pass
 
 
-def _provider_options(settings: Settings, json_schema: dict | None) -> dict[str, Any]:
-    """Translate our generic options into the parameter names each provider expects."""
-    if settings.model_provider == "ollama":
-        client_kwargs: dict[str, Any] = {"timeout": REQUEST_TIMEOUT_SECONDS}
-        if settings.model_api_key:
-            # Only Ollama Cloud needs a key; a local Ollama server ignores it.
-            client_kwargs["headers"] = {
-                "Authorization": f"Bearer {settings.model_api_key}"
-            }
-        options: dict[str, Any] = {
-            "base_url": settings.model_base_url,
-            "client_kwargs": client_kwargs,
-        }
-        if json_schema is not None:
-            # Ollama can force the output to match a JSON schema. This is much
-            # more reliable for small models than only asking for JSON in words.
-            options["format"] = json_schema
-        return options
+def get_chat_model(spec: ModelSpec, *, temperature: float = 0.7, json_mode: bool = False) -> Runnable:
+    """Create a chat model from a ModelSpec (name + base URL + key from .env).
 
-    # Other providers (e.g. "openai" or an OpenAI-compatible host).
-    options = {"timeout": REQUEST_TIMEOUT_SECONDS}
-    if settings.model_base_url:
-        options["base_url"] = settings.model_base_url
-    if settings.model_api_key:
-        options["api_key"] = settings.model_api_key
-    if json_schema is not None and settings.model_provider == "openai":
-        options["model_kwargs"] = {"response_format": {"type": "json_object"}}
-    return options
-
-
-def get_chat_model(
-    model_name: str,
-    *,
-    temperature: float = 0.7,
-    json_schema: dict | None = None,
-) -> Runnable:
-    """Create a chat model for `model_name`, configured from .env.
-
-    json_schema: if given, ask the provider to return JSON (matching the schema
-    where the provider supports it). Used by the auditor.
+    json_mode: ask the service to reply with a JSON object (used by the auditor).
 
     The model is wrapped with LangChain's built-in retry, which waits a bit
     longer after each failure (exponential backoff with random jitter).
     """
-    settings = get_settings()
+    options: dict[str, Any] = {}
+    if json_mode:
+        options["model_kwargs"] = {"response_format": {"type": "json_object"}}
     model = init_chat_model(
-        model_name,
-        model_provider=settings.model_provider,
+        spec.name,
+        model_provider="openai",  # the OpenAI *format*, not the OpenAI company
+        base_url=spec.base_url,
+        api_key=spec.api_key,
         temperature=temperature,
-        **_provider_options(settings, json_schema),
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        # The client's own hidden retries are switched off so that the one
+        # visible retry below is the only one (otherwise they would multiply).
+        max_retries=0,
+        **options,
     )
     return model.with_retry(
         retry_if_exception_type=RETRYABLE_ERRORS,
@@ -105,22 +70,25 @@ def reply_text(reply: Any) -> str:
     return content.strip()
 
 
-def friendly_error(error: Exception, model_name: str = "") -> str:
-    """Turn a provider exception into a short message for the UI (no stack trace)."""
-    settings = get_settings()
-    if isinstance(error, (ConnectionError, httpx.ConnectError)):
+def friendly_error(error: Exception, spec: ModelSpec) -> str:
+    """Turn a service error into a short message for the UI (no stack trace)."""
+    name = spec.name
+    if isinstance(error, (openai.AuthenticationError, openai.PermissionDeniedError)):
         return (
-            f"Cannot reach the model server at {settings.model_base_url}. "
-            "Is Ollama running? Start it with: ollama serve"
+            f"The API key for {name!r} was rejected. Check it in .env "
+            "(PRIMARY_API_KEY for Gemini, SECONDARY_API_KEY for Groq)."
         )
-    if isinstance(error, (TimeoutError, httpx.TimeoutException)):
-        return f"The model {model_name!r} took too long to answer. Please try again."
-    status = getattr(error, "status_code", None)
-    if status in (401, 403):
-        return "The API key was rejected. Check MODEL_API_KEY in .env."
-    # Ollama answers HTTP 404 when the model does not exist on that server.
-    if status == 404 and settings.model_provider == "ollama":
-        if "localhost" in settings.model_base_url or "127.0.0.1" in settings.model_base_url:
-            return f"Model {model_name!r} is not installed. Run: ollama pull {model_name}"
-        return f"Model {model_name!r} is not available at {settings.model_base_url}."
-    return f"Model {model_name!r} failed: {type(error).__name__}: {error}"
+    if isinstance(error, openai.RateLimitError):
+        return (
+            f"Free usage limit reached for {name!r}. Wait a minute and try again; "
+            "if it keeps happening, today's free limit is used up (it resets daily)."
+        )
+    if isinstance(error, openai.NotFoundError):
+        return f"Model {name!r} was not found. Check the model name in .env."
+    if isinstance(error, openai.APITimeoutError):  # before APIConnectionError: it is a subclass
+        return f"{name!r} took too long to answer. Please try again."
+    if isinstance(error, openai.APIConnectionError):
+        return f"Cannot reach {spec.base_url}. Check your internet connection."
+    if isinstance(error, openai.BadRequestError):
+        return f"{name!r} rejected the request: {error.message}"
+    return f"{name!r} failed: {type(error).__name__}: {error}"

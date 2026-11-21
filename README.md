@@ -5,7 +5,8 @@
 ModelProof asks two language models the same question, measures whether they agree,
 audits the answer for **hallucination, bias, toxicity and intent alignment**, grounds the
 hallucination check in **real Wikipedia evidence**, and lets you ask for a **corrected
-answer** when the audit finds a serious problem.
+answer** when the audit finds a serious problem. It works in **English and Georgian**:
+every answer is written in the language of the question.
 
 This is a from-scratch Python rebuild of
 [ModelProof](https://github.com/hgenix20/modelproof), originally a TypeScript/React app
@@ -17,16 +18,18 @@ AI course project: every feature applies a concept from the course (see
 
 ## What happens when you ask a question
 
-1. **Two answers in parallel.** `llama3.2` (primary) and `qwen2.5:3b` (secondary) get the
-   question plus the last few chat messages at the same time.
-2. **Agreement check.** Both answers are embedded with `all-MiniLM-L6-v2` and compared
-   with cosine similarity. At or above the threshold (default 0.80) you see the primary
+1. **Two answers in parallel.** Two AI services get the question plus the last few chat
+   messages at the same time: **Google Gemini** (primary) and **Groq** (secondary).
+2. **Agreement check.** Both answers are embedded with the multilingual
+   `paraphrase-multilingual-MiniLM-L12-v2` (local, free) and compared with cosine similarity. At or above the threshold (default 0.80) you see the primary
    answer with a *models agree* badge; below it you see both answers side by side
    with a *models disagree* badge. The score is always shown.
-3. **Evidence.** Wikipedia is searched with your question; the page introductions are
-   split into short passages and **re-ranked** by similarity to the answer. The top 3
-   passages become the evidence (shown with links).
-4. **Audit.** Four checks run in parallel, each returning a validated JSON result:
+3. **Evidence.** English Wikipedia is searched with your question (a Georgian question
+   is first translated into an English search query, because English Wikipedia is far
+   richer). The page introductions are split into short passages and **re-ranked** by
+   similarity to the answer; off-topic passages are dropped. The top 3 passages become
+   the evidence (shown with links).
+4. **Audit.** Four checks run in parallel on Groq, each returning a validated JSON result:
    `score` (0–1) plus `issues` (`quote` + `reason`).
 
    | Check | Looks at | Good | Moderate | Serious |
@@ -52,7 +55,7 @@ flowchart TD
     S([START]) --> G[generate_answers<br/><i>primary + secondary in parallel</i>]
     G -->|no model answered| E([END])
     G --> C[compare<br/><i>embeddings + cosine similarity</i>]
-    C --> R[retrieve_evidence<br/><i>Wikipedia search + re-ranking</i>]
+    C --> R[retrieve_evidence<br/><i>Wikipedia search + re-ranking<br/>Georgian: English search query</i>]
     R --> A[audit<br/><i>4 checks in parallel</i>]
     A -->|"any check Serious and revisions < 2"| H[human_review<br/><i>interrupt: waits for the user</i>]
     A -->|otherwise| F[finalize<br/><i>memory + audit log</i>]
@@ -77,38 +80,50 @@ flowchart TD
 
 ## Setup
 
-Requirements: Python 3.11+ (3.12 recommended) and [Ollama](https://ollama.com).
+Requirements: Python 3.11+ (3.12 recommended), an internet connection and two free API keys.
+
+### Two AI services, both free
+
+| Role | Service | Free key | Why |
+|---|---|---|---|
+| Primary answer, revisions, search translation | **Google Gemini** | [aistudio.google.com](https://aistudio.google.com) → *Get API key* | Strong in English and Georgian |
+| Second opinion + the four audit checks | **Groq** | [console.groq.com](https://console.groq.com) → *API Keys* | Higher free limits for the many audit calls; a different company gives an independent second opinion |
+
+Both are reached through their **OpenAI-compatible API**, so one client library
+(`langchain-openai`) talks to both. No credit card is needed for either free tier.
+
+The project first ran on two small local models (Ollama: `llama3.2`, `qwen2.5:3b`).
+They could not write Georgian (tested: their Georgian answers were nonsense), so the
+models moved to these two services. The model factory still works with any
+OpenAI-compatible server, including a local Ollama (`http://localhost:11434/v1`).
 
 ```bash
-# 1. Get the models (runs locally, free, no API key)
-ollama pull llama3.2
-ollama pull qwen2.5:3b
-
-# 2. Create a virtual environment and install the dependencies
+# 1. Create a virtual environment and install the dependencies
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt     # includes PyTorch, so it takes a few minutes
 
-# 3. Create your settings file
-cp .env.example .env                # then set WIKI_USER_AGENT to your own contact
+# 2. Create your settings file and paste your two keys into it
+cp .env.example .env                # PRIMARY_API_KEY (Gemini), SECONDARY_API_KEY (Groq)
 
-# 4. Run
+# 3. Run
 streamlit run app.py                # opens http://localhost:8501
 ```
 
-The first question downloads the embedding model (~90 MB) from Hugging Face; later runs
-use the local copy.
+The first question downloads the embedding model (~470 MB) from Hugging Face; later
+runs use the local copy.
 
 ### Settings (`.env`)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MODEL_PROVIDER` | `ollama` | LangChain provider for all models (`ollama`, or e.g. `openai` for an OpenAI-compatible API after `pip install langchain-openai`) |
-| `MODEL_BASE_URL` | `http://localhost:11434` | Where the models run (`https://ollama.com` for Ollama Cloud) |
-| `MODEL_API_KEY` | *(empty)* | Only needed for hosted providers. Never logged or printed |
-| `PRIMARY_MODEL` | `llama3.2` | Gives the main answer and writes revisions |
-| `SECONDARY_MODEL` | `qwen2.5:3b` | Second opinion for the agreement check |
-| `AUDITOR_MODEL` | *(empty = primary)* | Runs the four audit checks |
+| `PRIMARY_API_KEY` | *(required)* | Gemini key. Never logged or printed |
+| `PRIMARY_MODEL` | `gemini-2.5-flash` | Main answer, revisions and the Georgian → English search query |
+| `PRIMARY_BASE_URL` | Gemini's OpenAI-compatible URL | Where AI 1 is reached |
+| `SECONDARY_API_KEY` | *(required)* | Groq key. Never logged or printed |
+| `SECONDARY_MODEL` | `llama-3.3-70b-versatile` | Second opinion for the agreement check |
+| `AUDITOR_MODEL` | `openai/gpt-oss-120b` | Runs the four audit checks (on Groq) |
+| `SECONDARY_BASE_URL` | Groq's OpenAI-compatible URL | Where AI 2 is reached |
 | `AGREEMENT_THRESHOLD` | `0.80` | Cosine similarity at or above which the models "agree" |
 | `HISTORY_MESSAGES` | `6` | How many previous chat messages the models see |
 | `WIKI_USER_AGENT` | `ModelProof-py/0.1 (AI course project)` | Identifies the app to Wikipedia, as Wikimedia requires. Put your own contact here |
@@ -119,12 +134,14 @@ use the local copy.
 pytest -q
 ```
 
-50 small tests cover the pure functions: cosine similarity and the agreement threshold,
+62 small tests cover the pure functions: cosine similarity and the agreement threshold,
 parsing of the auditor's JSON (valid, fenced, invalid, out of range), verdict
 thresholds at their exact boundaries, the hallucination label rules, passage
-splitting, re-ranking and dropping off-topic evidence, the audit log (including "the API key is never written"),
-and the graph's routing decisions. They use fake embeddings, so they need neither
-Ollama nor internet.
+splitting, re-ranking and dropping off-topic evidence, the audit log (including "the
+API key is never written"), the graph's routing decisions, Georgian detection, the
+English search query for Georgian questions, the two-service settings and the error
+messages (rate limit, wrong key, unknown model). They use fakes instead of real AI
+services and embeddings, so they need neither API keys nor internet.
 
 ---
 
@@ -157,6 +174,7 @@ tests/          pytest tests
 | Grounded hallucination check | RAG: retrieval + re-ranking | 7–9 | `retrieval.py` |
 | Revise answer | Conditional routing, loops, human-in-the-loop `interrupt` | 10 | `graph.py`, `app.py` |
 | Audit trail | Logging | 4 | `audit_log.py` |
+| English + Georgian | Multilingual embeddings; query translation for retrieval | 5, 7–9 | `agreement.py`, `retrieval.py`, `graph.py` |
 | Workflow | LangGraph state graph | 10 | `graph.py` |
 
 ---
@@ -164,7 +182,7 @@ tests/          pytest tests
 ## How reliable is the audit?
 
 Measured on 7 hand-written answers (4 correct, 3 with a false fact), each audited twice
-by `llama3.2`:
+by `llama3.2` (the earlier local setup; to be re-measured with the Gemini/Groq setup):
 
 | Hallucination check | Correct verdicts | False answers caught |
 |---|---|---|
@@ -181,9 +199,12 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
 
 ## Known limitations
 
-- **Small models (~3B).** The auditor sometimes flags the wrong check (e.g. a factual
-  error also scored as "toxic") or calls a correct claim contradicted. Pointing
-  `AUDITOR_MODEL` at a stronger model is a one-line change in `.env`.
+- **Free tiers.** Gemini and Groq limit requests per minute and per day, and the limits
+  change over time. One question uses about 7 requests (2 answers, 4 audit checks, plus
+  1 search translation for Georgian). When a limit is reached the app says so instead of
+  crashing. Free tiers may also use what you send to improve their services, so do not
+  type personal information.
+- **Internet required.** Both AI services and Wikipedia are online.
 - **Agreement ≠ truth.** Embeddings capture topic and meaning, not exact facts:
   "water boils at 100 °C" and "…at 90 °C" score 0.94. Two models can also agree on the
   same mistake. That is why the audit and the evidence exist.
@@ -191,9 +212,13 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
   with the question text. Recent events, niche topics and non-encyclopedic questions
   (e.g. coding) often get weak or no evidence, and then the check falls back to
   general knowledge.
-- **English only.** `all-MiniLM-L6-v2` is trained on English and truncates long texts
-  (~256 tokens), so long answers are compared mostly by their beginning.
+- **Georgian.** Answer quality in Georgian depends on the model and is lower than in
+  English. Georgian answers are compared with English Wikipedia passages; such
+  cross-language relevance scores are lower (real evidence about 0.40–0.49), so an
+  off-topic passage occasionally passes the 0.35 relevance filter. The auditor writes
+  its explanations in English. The embedding model cuts texts after ~128 tokens, so
+  long answers are compared mostly by their beginning.
 - **Memory lives in RAM.** Conversations disappear when the server restarts
   (databases are out of scope for this project).
-- **Speed.** On a laptop one question takes roughly 15–40 s (two answers, four audit
-  checks, optional revisions). Ollama may run parallel requests one after another.
+- **Speed.** Depends on the services' load; free tiers may also slow down or pause
+  requests when the per-minute limit is reached.

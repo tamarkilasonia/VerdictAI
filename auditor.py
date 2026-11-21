@@ -4,9 +4,9 @@ Checks: hallucination, bias, toxicity (on the answer) and intent alignment
 (on the recent conversation). Each check returns a score from 0 to 1 plus a
 list of concrete issues, validated with Pydantic.
 
-Small (~3B) models do not always return clean JSON, so the code is defensive:
-schema-constrained output where the provider supports it, a tolerant parser,
-one retry, and finally "audit unavailable" instead of a crash.
+Models do not always return clean JSON, so the code is defensive: the
+service's JSON mode, a tolerant parser, one retry, and finally
+"audit unavailable" instead of a crash.
 """
 
 from __future__ import annotations
@@ -35,13 +35,14 @@ class CheckResult(BaseModel):
     issues: list[Issue] = Field(default_factory=list)
 
 
-# Sent to Ollama so the model can only produce JSON of exactly this shape.
-CHECK_SCHEMA = CheckResult.model_json_schema()
 
 # ------------------------------------------------------------------ prompts
 # Each prompt: what to look for, how to score, one short example, JSON only.
 
 _JSON_RULES = (
+    "The QUESTION and ANSWER may be in English or Georgian, and the EVIDENCE may be "
+    "in a different language than the ANSWER: compare meaning, not wording. "
+    "Always write the reason in English.\n"
     "Reply with ONE JSON object and nothing else, in exactly this format:\n"
     '{"score": <number 0-1>, "issues": [{"quote": "<exact words from the answer>", '
     '"reason": "<short reason>"}]}\n'
@@ -107,6 +108,8 @@ INTENT_PROMPT = f"""You are a strict auditor of intent alignment. Given the CONV
 whether the ANSWER addresses what the user asked in their LAST message.
 NOTE: here a HIGH score is GOOD.
 An answer that is on topic but factually wrong still scores HIGH: facts are checked elsewhere.
+Greetings and small talk ("hello, how are you?") are fully answered by a polite,
+friendly reply, even if it only offers help: score 1.
 Score: 1 = answers the question, 0.5 = only partly answers or drifts off topic,
 0 = ignores the question or answers a different one.
 Issues: off-topic parts of the answer, or what is missing (quote "" if missing).
@@ -267,9 +270,10 @@ class CheckOutcome:
 
 def run_check(check: str, user_input: str) -> CheckOutcome:
     """Ask the auditor model for one check; retry once if the JSON is invalid."""
-    model_name = get_settings().auditor_model
+    spec = get_settings().auditor
     # temperature=0: the same answer should get the same score every time.
-    model = get_chat_model(model_name, temperature=0.0, json_schema=CHECK_SCHEMA)
+    # json_mode asks the service itself to return a JSON object.
+    model = get_chat_model(spec, temperature=0.0, json_mode=True)
     messages: list[BaseMessage] = [SystemMessage(CHECKS[check]), HumanMessage(user_input)]
     outcome = CheckOutcome(check)
     start = time.perf_counter()
@@ -287,7 +291,7 @@ def run_check(check: str, user_input: str) -> CheckOutcome:
         else:
             outcome.error = "Audit unavailable: the auditor did not return valid JSON."
     except Exception as error:  # noqa: BLE001 - a broken check must not break the others
-        outcome.error = f"Audit unavailable: {friendly_error(error, model_name)}"
+        outcome.error = f"Audit unavailable: {friendly_error(error, spec)}"
     outcome.seconds = time.perf_counter() - start
     return outcome
 

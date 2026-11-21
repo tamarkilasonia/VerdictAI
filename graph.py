@@ -43,7 +43,7 @@ from langgraph.types import interrupt
 
 from agreement import Agreement, compare_answers
 from audit_log import append_entry, build_entry, build_failure_entry
-from answers import ModelAnswer, ask_both, build_messages, revise_answer
+from answers import ModelAnswer, ask_both, build_messages, revise_answer, translate_for_search
 from auditor import (
     CheckOutcome,
     CheckResult,
@@ -53,7 +53,7 @@ from auditor import (
     run_audit,
 )
 from config import MAX_REVISIONS, get_settings
-from retrieval import Passage, get_evidence
+from retrieval import Passage, get_evidence, is_georgian
 
 
 @dataclass
@@ -67,6 +67,7 @@ class Turn:
     agreement_error: str | None = None
     evidence: list[Passage] = field(default_factory=list)
     evidence_error: str | None = None
+    search_query: str = ""  # what Wikipedia was searched for (English)
     audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of the final answer
     revisions: list[str] = field(default_factory=list)  # corrected answers, oldest first
     original_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # before revising
@@ -110,6 +111,7 @@ class ChatState(TypedDict, total=False):
     agreement_error: str | None
     evidence: list[Passage]
     evidence_error: str | None
+    search_query: str
     audit: dict[str, CheckOutcome]
     revisions: list[str]
     original_audit: dict[str, CheckOutcome]
@@ -129,6 +131,7 @@ def new_question_input(question: str) -> dict[str, Any]:
         "agreement_error": None,
         "evidence": [],
         "evidence_error": None,
+        "search_query": "",
         "audit": {},
         "revisions": [],
         "original_audit": {},
@@ -150,6 +153,7 @@ def turn_from_state(state: ChatState) -> Turn:
         agreement_error=state.get("agreement_error"),
         evidence=state.get("evidence", []),
         evidence_error=state.get("evidence_error"),
+        search_query=state.get("search_query", ""),
         audit=state.get("audit", {}),
         revisions=state.get("revisions", []),
         original_audit=state.get("original_audit", {}),
@@ -206,7 +210,7 @@ def generate_answers(state: ChatState) -> dict:
     messages = build_messages(
         state.get("messages", []), state["question"], settings.history_messages
     )
-    primary, secondary = ask_both(settings.primary_model, settings.secondary_model, messages)
+    primary, secondary = ask_both(settings.primary, settings.secondary, messages)
     update: dict[str, Any] = {"primary": primary, "secondary": secondary}
     if not primary.ok and not secondary.ok:
         update["error"] = f"No model could answer.\n\n- {primary.error}\n- {secondary.error}"
@@ -239,11 +243,18 @@ def compare(state: ChatState) -> dict:
 @timed("evidence")
 def retrieve_evidence(state: ChatState) -> dict:
     """Find Wikipedia passages that can confirm or contradict the final answer."""
+    settings = get_settings()
+    query = state["question"]
+    if is_georgian(query):
+        # English Wikipedia is much richer, so search it in English. The
+        # passages are still ranked against the (Georgian) answer.
+        try:
+            query = translate_for_search(settings.primary, query)
+        except Exception:  # noqa: BLE001 - e.g. rate limit: search with the original text
+            pass
     try:
-        evidence = get_evidence(
-            state["question"], _final_answer(state), get_settings().wiki_user_agent
-        )
-        return {"evidence": evidence}
+        evidence = get_evidence(query, _final_answer(state), settings.wiki_user_agent)
+        return {"evidence": evidence, "search_query": query}
     # No internet, Wikipedia down, timeout...: the audit simply continues
     # without evidence, and the UI says so.
     except Exception as error:  # noqa: BLE001
@@ -278,7 +289,7 @@ def human_review(state: ChatState) -> dict:
 def revise(state: ChatState) -> dict:
     """Ask PRIMARY to fix the answer using the audit's problems and the evidence."""
     revised = revise_answer(
-        get_settings().primary_model,
+        get_settings().primary,
         _recent_history(state),
         state["question"],
         _final_answer(state),

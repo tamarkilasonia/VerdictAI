@@ -6,6 +6,9 @@ A small two-stage RAG pipeline:
                embeddings are closest to the ANSWER (precise, local).
 We search with the question because it names the topic; we re-rank with the
 answer because the answer's claims are what the auditor must verify.
+Georgian questions are searched with an English translation (English Wikipedia
+is far richer); the multilingual embeddings can still compare English
+passages with a Georgian answer.
 """
 
 from __future__ import annotations
@@ -23,11 +26,23 @@ TOP_PASSAGES = 3  # how many passages to give the auditor
 SENTENCES_PER_PASSAGE = 3  # short passages keep the auditor's prompt small and focused
 TIMEOUT_SECONDS = 10
 # Wikipedia search always returns *something*: for "hello how are you" it finds
-# songs called "Hello". Off-topic passages like that scored 0.03-0.21 against
-# the answer, while real evidence scored 0.57-0.88. Passages below this cosine
-# score are dropped, because judging an answer "against" unrelated text makes
-# the auditor flag harmless answers as hallucinations.
+# songs called "Hello". Passages below this cosine score are dropped, because
+# judging an answer "against" unrelated text makes the auditor flag harmless
+# answers as hallucinations. Measured with the multilingual embedding model:
+# English answer vs. real evidence 0.64-0.72, English small talk vs. songs < 0.35;
+# Georgian answer vs. English evidence 0.40-0.49 (cross-language scores are lower,
+# so an off-topic passage can occasionally slip through for Georgian).
 MIN_RELEVANCE = 0.35
+
+
+def is_georgian(text: str) -> bool:
+    """True if the text contains Georgian letters (Unicode block U+10A0-U+10FF).
+
+    Checking the alphabet is enough here: English questions never contain
+    Georgian letters, and a Georgian question with one English word in it
+    ("რა არის Python?") still counts as Georgian.
+    """
+    return any("Ⴀ" <= char <= "ჿ" for char in text)
 
 
 @dataclass
@@ -105,11 +120,15 @@ def rerank(
     return sorted(relevant, key=lambda passage: passage.score, reverse=True)[:top_k]
 
 
-def get_evidence(question: str, answer: str, user_agent: str) -> list[Passage]:
-    """Search, split and re-rank. Returns [] if Wikipedia has nothing relevant."""
+def get_evidence(query: str, answer: str, user_agent: str) -> list[Passage]:
+    """Search, split and re-rank. Returns [] if Wikipedia has nothing relevant.
+
+    query: what to search for (the question, in English).
+    answer: what the passages are ranked against (may be in any language).
+    """
     passages = [
         Passage(title=title, url=url, text=chunk)
-        for title, url, intro in search_wikipedia(question, user_agent)
+        for title, url, intro in search_wikipedia(query, user_agent)
         for chunk in split_passages(intro)
     ]
     return rerank(answer, passages)
@@ -118,3 +137,4 @@ def get_evidence(question: str, answer: str, user_agent: str) -> list[Passage]:
 ##cd /Users/tamarkilasonia/modelproof-py
 ##source .venv/bin/activate
 ##pytest -q
+##streamlit run app.py
