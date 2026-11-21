@@ -10,6 +10,7 @@ import uuid
 import streamlit as st
 from langgraph.types import Command
 
+from audit_log import read_log
 from auditor import HIGHER_IS_BETTER, ICONS, CheckOutcome, needs_revision
 from config import MAX_REVISIONS, Settings, get_settings
 from graph import Turn, build_graph, new_question_input, turn_from_state
@@ -44,6 +45,16 @@ def render_sidebar(settings: Settings) -> None:
         if st.button("🗑️ New conversation", width="stretch"):
             st.session_state.thread_id = uuid.uuid4().hex
             st.rerun()
+        log = read_log()
+        st.download_button(
+            "⬇️ Download log",
+            data=log,
+            file_name="audit_log.jsonl",
+            mime="application/jsonl",
+            width="stretch",
+            disabled=not log,  # nothing to download before the first answer
+            help="One JSON line per question: answers, scores, evidence, latency, errors.",
+        )
 
 
 def check_label(check: str) -> str:
