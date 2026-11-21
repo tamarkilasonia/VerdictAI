@@ -55,6 +55,7 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
             turn.evidence_error,
             turn.revise_error,
             *(outcome.error for outcome in turn.audit.values()),
+            *(outcome.error for outcome in turn.secondary_audit.values()),
         )
         if message
     ]
@@ -71,11 +72,7 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
         "answer_translation": turn.answer_translation or None,
         "evidence_urls": sorted({passage.url for passage in turn.evidence}),
         "audit_scores": _scores(turn.audit),
-        "secondary_hallucination_score": (
-            turn.secondary_check.result.score
-            if turn.secondary_check and turn.secondary_check.result
-            else None
-        ),
+        "secondary_audit_scores": _scores(turn.secondary_audit) or None,
         "original_audit_scores": _scores(turn.original_audit) if turn.revisions else None,
         "revision_count": len(turn.revisions),
         "latency_seconds": {step: round(sec, 2) for step, sec in turn.latency.items()},

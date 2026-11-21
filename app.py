@@ -25,7 +25,6 @@ CHECK_LABELS = {
     "toxicity": "Toxicity",
     "intent_alignment": "Intent alignment",
 }
-SAFETY_CHECKS = ("hallucination", "bias", "toxicity")  # lower score = better
 
 
 def load_settings_or_stop() -> Settings:
@@ -83,77 +82,56 @@ def agreement_pill(turn: Turn) -> str:
     return ui.pill(f"Models disagree · {score}", "warn")
 
 
-def render_answer_body(turn: Turn) -> None:
-    """Agree -> one answer. Disagree -> both side by side. One failed -> say why."""
-    if not (turn.primary.ok and turn.secondary.ok):
-        working, failed = (
-            (turn.primary, turn.secondary) if turn.primary.ok else (turn.secondary, turn.primary)
-        )
-        st.markdown(working.text)
-        st.caption(f"Only {working.model} answered. {failed.model}: {failed.error}")
-        return
-    if turn.agreement is None or turn.agreement.agree:
-        st.markdown(turn.primary.text)
-        if turn.agreement_error:
-            st.caption(turn.agreement_error)
-        return
-    for column, answer in zip(st.columns(2, gap="medium"), (turn.primary, turn.secondary)):
-        with column:
-            st.html(f'<div class="mp-label">{answer.model}</div>')
-            st.markdown(answer.text)
-    render_secondary_check(turn)
-
-
-def render_secondary_check(turn: Turn) -> None:
-    """When the models disagree, say whether SECONDARY's answer holds up too.
-
-    The full audit (strip below the answers) is about PRIMARY's answer; this
-    line tells the user which of the two disagreeing answers looks wrong.
-    """
-    check = turn.secondary_check
-    if check is None:
-        return
-    if check.status == "pass":
-        text = f"{turn.secondary.model}: no contradiction found either."
-    elif check.result is None:
-        text = f"{turn.secondary.model}: {check.error}"
-    else:
-        reasons = "; ".join(issue.reason for issue in check.result.issues[:2])
-        text = f"{turn.secondary.model}'s answer: {reasons}"
-    st.html(ui.audit_strip([(f"Hallucination ({turn.secondary.model})", check.status)]))
-    st.caption(text)
-
-
-def render_revised_body(turn: Turn) -> None:
-    """Original and revised answer side by side, each with its audit verdict."""
-    original, revised = st.columns(2, gap="medium")
-    with original:
-        st.html('<div class="mp-label">Original</div>')
-        st.markdown(turn.original_answer)
-        st.html(audit_strip(turn.original_audit))
-    with revised:
-        st.html('<div class="mp-label">Revised</div>')
-        st.markdown(turn.final_answer)
-        st.html(audit_strip(turn.audit))
-
-
 def audit_strip(audit: dict[str, CheckOutcome]) -> str:
     return ui.audit_strip([(CHECK_LABELS[c], o.status) for c, o in audit.items()])
 
 
+def render_primary_column(turn: Turn) -> None:
+    """PRIMARY's (possibly revised) answer with its own audit verdict."""
+    label = turn.primary.model
+    if turn.revisions:
+        label += f" · revised {len(turn.revisions)} of {MAX_REVISIONS}"
+    st.html(f'<div class="mp-label">{ui.escape(label)}</div>')
+    st.markdown(turn.final_answer)
+    if turn.audit:
+        st.html(audit_strip(turn.audit))
+    if turn.revisions:
+        # The answer before the first revision, with the verdict that led to it.
+        with st.expander("Original answer"):
+            st.markdown(turn.original_answer)
+            st.html(audit_strip(turn.original_audit))
+
+
+def render_secondary_column(turn: Turn) -> None:
+    """SECONDARY's answer with its own audit verdict."""
+    st.html(f'<div class="mp-label">{ui.escape(turn.secondary.model)}</div>')
+    st.markdown(turn.secondary.text)
+    if turn.secondary_audit:
+        st.html(audit_strip(turn.secondary_audit))
+
+
 def render_turn(turn: Turn, index: int) -> None:
+    """Both answers side by side, each with its own audit, so they can be compared."""
     render_user_bubble(turn.question, str(index))
     with st.container(key=f"msg-bot-{index}"):
-        models = f"{turn.primary.model} + {turn.secondary.model}"
-        if turn.revisions:
-            revised = ui.pill(f"Revised after audit · {len(turn.revisions)} of {MAX_REVISIONS}", "info")
-            st.html(ui.bubble_head(models, agreement_pill(turn), revised))
-            render_revised_body(turn)
+        st.html(ui.bubble_head(agreement_pill(turn)))
+        if not (turn.primary.ok and turn.secondary.ok):
+            working, failed = (
+                (turn.primary, turn.secondary) if turn.primary.ok else (turn.secondary, turn.primary)
+            )
+            st.html(f'<div class="mp-label">{ui.escape(working.model)}</div>')
+            st.markdown(turn.final_answer)
+            if turn.audit:
+                st.html(audit_strip(turn.audit))
+            st.caption(f"Only {working.model} answered. {failed.model}: {failed.error}")
             return
-        st.html(ui.bubble_head(models, agreement_pill(turn)))
-        render_answer_body(turn)
-        if turn.audit:
-            st.html(audit_strip(turn.audit))
+        left, right = st.columns(2, gap="medium")
+        with left:
+            render_primary_column(turn)
+        with right:
+            render_secondary_column(turn)
+        if turn.agreement_error:
+            st.caption(turn.agreement_error)
 
 
 def render_review_controls(turn: Turn) -> str | None:
@@ -163,8 +141,8 @@ def render_review_controls(turn: Turn) -> str | None:
     remaining = MAX_REVISIONS - len(turn.revisions)
     st.html(
         ui.callout(
-            "The audit found a serious problem with this answer. Ask the primary model "
-            f"to fix it using the audit and the evidence? ({remaining} revision(s) left)"
+            f"The audit found a serious problem with the {turn.primary.model} answer. Ask it "
+            f"to fix the answer using the audit and the evidence? ({remaining} revision(s) left)"
         )
     )
     revise_column, keep_column, _ = st.columns([1.2, 1.2, 2])
@@ -178,23 +156,52 @@ def render_review_controls(turn: Turn) -> str | None:
 # ----------------------------------------------------------- audit column
 
 
-def intent_explanation(outcome: CheckOutcome) -> str:
-    if outcome.result is None:
-        return outcome.error or "Audit unavailable."
-    if outcome.result.issues:
-        return outcome.result.issues[0].reason
-    return "The answer addresses what was asked."
+def render_comparison(turn: Turn) -> None:
+    """Every check for both answers, side by side: which answer holds up better?"""
+    audits = [(turn.final_model, turn.audit)]
+    if turn.secondary_audit:
+        audits.append((turn.secondary.model, turn.secondary_audit))
+    rows = [
+        (
+            CHECK_LABELS[check],
+            [
+                (audit[check].status, score_of(audit[check])) if check in audit else ("unavailable", None)
+                for _, audit in audits
+            ],
+        )
+        for check in CHECK_LABELS
+    ]
+    st.html(
+        '<div class="mp-section">Comparison</div>'
+        + ui.comparison_table([model for model, _ in audits], rows)
+        + '<div class="mp-note">Hallucination, bias, toxicity: lower is better. '
+        "Intent alignment: higher is better.</div>"
+    )
 
 
-def render_issues(audit: dict[str, CheckOutcome]) -> None:
+def render_issues(turn: Turn) -> None:
+    """Problems found in either answer, labelled with the model that wrote it."""
+    audits = [(turn.final_model, turn.audit), (turn.secondary.model, turn.secondary_audit)]
     cards = [
-        ui.issue_card(CHECK_LABELS[check], outcome.status, issue.quote, issue.reason)
+        ui.issue_card(f"{CHECK_LABELS[check]} · {model}", outcome.status, issue.quote, issue.reason)
+        for model, audit in audits
         for check, outcome in audit.items()
         if outcome.result and outcome.status in ("warn", "fail")
         for issue in outcome.result.issues
     ]
+    errors = [
+        f"{model} · {CHECK_LABELS[check]}: {outcome.error}"
+        for model, audit in audits
+        for check, outcome in audit.items()
+        if outcome.error
+    ]
+    html = ""
     if cards:
-        st.html('<div class="mp-section">Issues found</div>' + "".join(cards))
+        html += '<div class="mp-section">Issues found</div>' + "".join(cards)
+    if errors:
+        html += "".join(f'<div class="mp-muted">{ui.escape(e)}</div>' for e in errors)
+    if html:
+        st.html(html)
 
 
 def render_evidence(turn: Turn) -> None:
@@ -233,28 +240,17 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
             st.html('<div class="mp-muted">The audit of the latest answer appears here.</div>')
             return
 
-        audit = turn.audit
-        st.html(f'<div class="mp-muted">Audited answer by {turn.final_model}</div>')
         if turn.answer_translation:
             # The evidence was ranked against this translation, and the quotes
             # in "Issues found" come from it.
-            with st.expander("Georgian answer: checked in English translation"):
+            with st.expander("Georgian answers: checked in English translation"):
                 st.markdown(turn.answer_translation)
-        if "intent_alignment" in audit:
-            intent = audit["intent_alignment"]
-            st.html(ui.intent_card(intent.status, score_of(intent), intent_explanation(intent)))
+        render_comparison(turn)
 
-        rows = "".join(
-            ui.metric_row(CHECK_LABELS[c], audit[c].status, score_of(audit[c]))
-            for c in SAFETY_CHECKS
-            if c in audit
-        )
-        st.html('<div class="mp-section">Content safety</div>' + rows)
-
-        if needs_revision(audit) and len(turn.revisions) >= MAX_REVISIONS:
+        if needs_revision(turn.audit) and len(turn.revisions) >= MAX_REVISIONS:
             st.html(ui.callout(f"Still failing after {MAX_REVISIONS} revisions: treat with caution.", "fail"))
 
-        render_issues(audit)
+        render_issues(turn)
         render_evidence(turn)
         render_details(turn, settings)
 

@@ -11,7 +11,6 @@ import pytest
 import answers
 import config
 import graph
-from agreement import Agreement
 from answers import ModelAnswer
 from auditor import CheckOutcome, CheckResult
 from config import ModelSpec, Settings
@@ -162,6 +161,8 @@ def run_audit_node(monkeypatch, answer, translate, translation=""):
         "answer_translation": translation,
         "primary": ModelAnswer("p", text=answer),
         "secondary": ModelAnswer("s", text=answer),
+        # SECONDARY already audited: these tests are about PRIMARY's answer.
+        "secondary_audit": {"hallucination": CheckOutcome("hallucination")},
         "latency": {},
     }
     return graph.audit(state), audited
@@ -234,35 +235,47 @@ def test_translation_keeps_quotes_that_belong_to_the_text(monkeypatch, reply, ex
     assert answers.translate_to_english(SPEC, "ტექსტი") == expected
 
 
-# ------------------------------- checking SECONDARY's answer when they disagree
+# ----------------------------------------- auditing BOTH answers to compare them
 
 
-def run_audit_with_agreement(monkeypatch, agree):
-    checked = []
+def run_both_audits(monkeypatch, secondary_audit=None, primary_ok=True):
+    audited = []
 
-    def fake_run_check(check, user_input):
-        checked.append(user_input)
-        return CheckOutcome(check, CheckResult(score=0.9, issues=[]))
+    def fake_run_audit(question, answer, conversation, evidence):
+        audited.append(answer)
+        return {"hallucination": CheckOutcome("hallucination", CheckResult(score=0.9, issues=[]))}
 
     monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
-    monkeypatch.setattr(graph, "run_audit", lambda *args: {})
-    monkeypatch.setattr(graph, "run_check", fake_run_check)
+    monkeypatch.setattr(graph, "run_audit", fake_run_audit)
     state = {
         "question": "Who wrote The Knight in the Panther's Skin?",
-        "primary": ModelAnswer("p", text="Shota Rustaveli wrote it."),
+        "primary": (
+            ModelAnswer("p", text="Shota Rustaveli wrote it.")
+            if primary_ok
+            else ModelAnswer("p", error="service down")
+        ),
         "secondary": ModelAnswer("s", text="Supran Makvsadze wrote it."),
-        "agreement": Agreement(score=0.64 if not agree else 0.95, agree=agree),
+        "secondary_audit": secondary_audit or {},
         "latency": {},
     }
-    return graph.audit(state), checked
+    return graph.audit(state), audited
 
 
-def test_secondary_answer_is_checked_when_the_models_disagree(monkeypatch):
-    update, checked = run_audit_with_agreement(monkeypatch, agree=False)
-    assert update["secondary_check"].status == "fail"
-    assert "Supran Makvsadze" in checked[0]  # SECONDARY's answer was the one checked
+def test_both_answers_are_audited(monkeypatch):
+    update, audited = run_both_audits(monkeypatch)
+    assert sorted(audited) == ["Shota Rustaveli wrote it.", "Supran Makvsadze wrote it."]
+    assert update["secondary_audit"]["hallucination"].status == "fail"
 
 
-def test_secondary_answer_is_not_checked_when_the_models_agree(monkeypatch):
-    update, checked = run_audit_with_agreement(monkeypatch, agree=True)
-    assert "secondary_check" not in update and checked == []
+def test_secondary_is_not_audited_again_after_a_revision(monkeypatch):
+    earlier = {"hallucination": CheckOutcome("hallucination", CheckResult(score=0.0, issues=[]))}
+    update, audited = run_both_audits(monkeypatch, secondary_audit=earlier)
+    assert audited == ["Shota Rustaveli wrote it."]  # only PRIMARY's (revised) answer
+    assert "secondary_audit" not in update
+
+
+def test_only_answer_is_audited_once_when_primary_failed(monkeypatch):
+    # The shown answer IS the secondary one, so auditing it twice would be wasted.
+    update, audited = run_both_audits(monkeypatch, primary_ok=False)
+    assert audited == ["Supran Makvsadze wrote it."]
+    assert "secondary_audit" not in update
