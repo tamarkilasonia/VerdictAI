@@ -54,6 +54,16 @@ def _number(name: str, default: float, cast: type) -> float | int:
         raise ValueError(f"{name} in .env must be a number, got {raw!r}") from None
 
 
+def _user_agent() -> str:
+    """WIKI_USER_AGENT, unless it still holds the "<your contact>" placeholder.
+
+    Sending the placeholder text to Wikipedia would be meaningless, so we use
+    the generic default until the user fills in real contact details.
+    """
+    value = _text("WIKI_USER_AGENT", DEFAULT_USER_AGENT)
+    return DEFAULT_USER_AGENT if "<" in value else value
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Load .env once and return the settings.
@@ -73,7 +83,7 @@ def get_settings() -> Settings:
         auditor_model=_text("AUDITOR_MODEL", primary),  # empty -> same as primary
         agreement_threshold=_number("AGREEMENT_THRESHOLD", 0.80, float),
         history_messages=_number("HISTORY_MESSAGES", 6, int),
-        wiki_user_agent=_text("WIKI_USER_AGENT", DEFAULT_USER_AGENT),
+        wiki_user_agent=_user_agent(),
     )
 
     # Catch impossible values early, with a message a human can act on.

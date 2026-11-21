@@ -126,6 +126,22 @@ def render_check(check: str, outcome: CheckOutcome) -> None:
                 st.markdown(issue.reason)
 
 
+def render_evidence(turn: Turn) -> None:
+    """The Wikipedia passages the hallucination check was judged against."""
+    st.markdown("**📚 Evidence (Wikipedia)**")
+    if turn.evidence_error:
+        st.warning(turn.evidence_error)
+        return
+    if not turn.evidence:
+        st.caption("No relevant Wikipedia passages found; checked without evidence.")
+        return
+    for passage in turn.evidence:
+        # The score shows how close the passage is to the answer (re-ranking).
+        with st.expander(f"{passage.title} · relevance {passage.score:.2f}"):
+            st.markdown(passage.text)
+            st.markdown(f"[Open on Wikipedia ↗]({passage.url})")
+
+
 def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
     """Details for the latest answer: verdicts, issues, agreement, models, latency."""
     st.subheader("🔍 Audit")
@@ -136,11 +152,11 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
     st.caption(f"Audited answer: `{turn.final_model}` · auditor: `{settings.auditor_model}`")
     for check, outcome in turn.audit.items():
         render_check(check, outcome)
-    if "hallucination" in turn.audit:
-        st.caption("Hallucination was checked without evidence (general knowledge only).")
     if needs_revision(turn.audit):
         st.error("❌ At least one check failed: treat this answer with caution.")
 
+    st.divider()
+    render_evidence(turn)
     st.divider()
     if turn.agreement is not None:
         st.markdown(f"**Agreement:** `{turn.agreement.score:.2f}`")
@@ -177,7 +193,8 @@ def thread_config() -> dict:
 # What the status box says while the NEXT step runs, keyed by the step that just finished.
 NEXT_STEP_LABEL = {
     "generate_answers": "Comparing answers…",
-    "compare": "Auditing…",
+    "compare": "Checking evidence…",
+    "retrieve_evidence": "Auditing…",
     "audit": "Saving…",
 }
 
