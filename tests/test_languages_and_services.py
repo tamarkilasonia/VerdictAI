@@ -11,7 +11,9 @@ import pytest
 import answers
 import config
 import graph
+from agreement import Agreement
 from answers import ModelAnswer
+from auditor import CheckOutcome, CheckResult
 from config import ModelSpec, Settings
 from models import friendly_error
 from retrieval import is_georgian
@@ -91,13 +93,13 @@ def test_friendly_error_messages(error, expected):
     assert "secret" not in message  # the key never appears in a message
 
 
-# --------------------------------------------- Wikipedia search translation
+# ------------------------------------------------ Wikipedia search query
 
 
-def run_retrieve(monkeypatch, question, translate):
+def run_retrieve(monkeypatch, question, make_query):
     searched = []
     monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
-    monkeypatch.setattr(graph, "translate_to_english", translate)
+    monkeypatch.setattr(graph, "make_search_query", make_query)
     monkeypatch.setattr(graph, "get_evidence", lambda query, answer, ua: searched.append(query) or [])
     state = {
         "question": question,
@@ -108,23 +110,23 @@ def run_retrieve(monkeypatch, question, translate):
     return graph.retrieve_evidence(state), searched
 
 
-def test_georgian_question_is_searched_in_english(monkeypatch):
+@pytest.mark.parametrize(
+    "question",
+    [
+        "მე როგორც ვიცი ვეფხისტყაოსანი გალაკტიონ ტაბიძემ დაწერა",
+        "As far as I know, The Knight in the Panther's Skin was written by Galaktion.",
+    ],
+)
+def test_wikipedia_is_searched_with_short_english_keywords(monkeypatch, question):
+    # A whole sentence found no Wikipedia page; keywords do (in any language).
     update, searched = run_retrieve(
-        monkeypatch, "ვინ აღმოაჩინა პენიცილინი?", lambda spec, q: "Who discovered penicillin?"
+        monkeypatch, question, lambda spec, q: "The Knight in the Panther's Skin"
     )
-    assert searched == ["Who discovered penicillin?"]
-    assert update["search_query"] == "Who discovered penicillin?"
+    assert searched == ["The Knight in the Panther's Skin"]
+    assert update["search_query"] == "The Knight in the Panther's Skin"
 
 
-def test_english_question_is_not_translated(monkeypatch):
-    def must_not_translate(spec, q):
-        raise AssertionError("English questions must not be translated")
-
-    _, searched = run_retrieve(monkeypatch, "Who discovered penicillin?", must_not_translate)
-    assert searched == ["Who discovered penicillin?"]
-
-
-def test_failed_translation_falls_back_to_the_original_question(monkeypatch):
+def test_failed_search_query_falls_back_to_the_question(monkeypatch):
     def broken(spec, q):
         raise api_error(openai.RateLimitError, 429)
 
@@ -156,7 +158,7 @@ def run_audit_node(monkeypatch, answer, translate, translation=""):
     monkeypatch.setattr(graph, "run_audit", fake_run_audit)
     state = {
         "question": GEORGIAN_QUESTION,
-        "search_query": "Who discovered penicillin?",
+        "search_query": "Penicillin",
         "answer_translation": translation,
         "primary": ModelAnswer("p", text=answer),
         "secondary": ModelAnswer("s", text=answer),
@@ -169,6 +171,7 @@ def test_georgian_answer_is_ranked_and_audited_in_english(monkeypatch):
     ranked = []
     monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
     monkeypatch.setattr(graph, "translate_to_english", lambda spec, text: ENGLISH[text])
+    monkeypatch.setattr(graph, "make_search_query", lambda spec, q: "Penicillin")
     monkeypatch.setattr(
         graph, "get_evidence", lambda query, answer, ua: ranked.append((query, answer)) or []
     )
@@ -179,7 +182,7 @@ def test_georgian_answer_is_ranked_and_audited_in_english(monkeypatch):
         "latency": {},
     }
     update = graph.retrieve_evidence(state)
-    assert ranked == [("Who discovered penicillin?", ENGLISH[GEORGIAN_ANSWER])]
+    assert ranked == [("Penicillin", ENGLISH[GEORGIAN_ANSWER])]
 
     # The audit reuses the same translation instead of translating again.
     def must_not_translate(spec, t):
@@ -188,7 +191,7 @@ def test_georgian_answer_is_ranked_and_audited_in_english(monkeypatch):
     _, audited = run_audit_node(
         monkeypatch, GEORGIAN_ANSWER, must_not_translate, update["answer_translation"]
     )
-    assert audited == {"question": "Who discovered penicillin?", "answer": ENGLISH[GEORGIAN_ANSWER]}
+    assert audited == {"question": GEORGIAN_QUESTION, "answer": ENGLISH[GEORGIAN_ANSWER]}
 
 
 def test_revised_georgian_answer_is_translated_again(monkeypatch):
@@ -229,3 +232,37 @@ def test_failed_answer_translation_audits_the_georgian_text(monkeypatch):
 def test_translation_keeps_quotes_that_belong_to_the_text(monkeypatch, reply, expected):
     monkeypatch.setattr(answers, "ask_model", lambda spec, messages, temperature: reply)
     assert answers.translate_to_english(SPEC, "ტექსტი") == expected
+
+
+# ------------------------------- checking SECONDARY's answer when they disagree
+
+
+def run_audit_with_agreement(monkeypatch, agree):
+    checked = []
+
+    def fake_run_check(check, user_input):
+        checked.append(user_input)
+        return CheckOutcome(check, CheckResult(score=0.9, issues=[]))
+
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr(graph, "run_audit", lambda *args: {})
+    monkeypatch.setattr(graph, "run_check", fake_run_check)
+    state = {
+        "question": "Who wrote The Knight in the Panther's Skin?",
+        "primary": ModelAnswer("p", text="Shota Rustaveli wrote it."),
+        "secondary": ModelAnswer("s", text="Supran Makvsadze wrote it."),
+        "agreement": Agreement(score=0.64 if not agree else 0.95, agree=agree),
+        "latency": {},
+    }
+    return graph.audit(state), checked
+
+
+def test_secondary_answer_is_checked_when_the_models_disagree(monkeypatch):
+    update, checked = run_audit_with_agreement(monkeypatch, agree=False)
+    assert update["secondary_check"].status == "fail"
+    assert "Supran Makvsadze" in checked[0]  # SECONDARY's answer was the one checked
+
+
+def test_secondary_answer_is_not_checked_when_the_models_agree(monkeypatch):
+    update, checked = run_audit_with_agreement(monkeypatch, agree=True)
+    assert "secondary_check" not in update and checked == []

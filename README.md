@@ -23,13 +23,16 @@ AI course project: every feature applies a concept from the course (see
 2. **Agreement check.** Both answers are embedded with the multilingual
    `paraphrase-multilingual-MiniLM-L12-v2` (local, free) and compared with cosine similarity. At or above the threshold (default 0.80) you see the primary
    answer with a *models agree* badge; below it you see both answers side by side
-   with a *models disagree* badge. The score is always shown.
-3. **Evidence.** English Wikipedia is searched with your question. The page
-   introductions are split into short passages and **re-ranked** by similarity to the
-   answer; off-topic passages are dropped. The top 3 passages become the evidence
-   (shown with links). For Georgian, Gemini first translates the question and the
-   answer into English: English Wikipedia is far richer, and English-to-English
-   ranking is more precise.
+   with a *models disagree* badge. The score is always shown. When they disagree,
+   the second answer also gets a hallucination check, so you can see which of the two
+   contradicts the evidence.
+3. **Evidence.** Gemini turns your question into a few English keywords (Wikipedia's
+   search needs every word to match, so a whole sentence often finds nothing), and
+   English Wikipedia is searched with them. The page introductions are split into
+   short passages and **re-ranked** by similarity to the answer; off-topic passages are
+   dropped. The top 3 passages become the evidence (shown with links). A Georgian
+   answer is first translated into English, because English-to-English ranking is
+   more precise.
 4. **Audit.** Four checks run in parallel on Groq, each returning a validated JSON result:
    `score` (0–1) plus `issues` (`quote` + `reason`). A Georgian answer is audited in
    its English translation (shown in the audit panel), because the auditor model
@@ -58,8 +61,8 @@ flowchart TD
     S([START]) --> G[generate_answers<br/><i>primary + secondary in parallel</i>]
     G -->|no model answered| E([END])
     G --> C[compare<br/><i>embeddings + cosine similarity</i>]
-    C --> R[retrieve_evidence<br/><i>Wikipedia search + re-ranking<br/>Georgian: translated to English first</i>]
-    R --> A[audit<br/><i>4 checks in parallel<br/>Georgian: on the English translation</i>]
+    C --> R[retrieve_evidence<br/><i>Wikipedia search + re-ranking<br/>English keywords; Georgian answer translated</i>]
+    R --> A[audit<br/><i>4 checks in parallel<br/>+ 2nd answer if the models disagree</i>]
     A -->|"any check Serious and revisions < 2"| H[human_review<br/><i>interrupt: waits for the user</i>]
     A -->|otherwise| F[finalize<br/><i>memory + audit log</i>]
     H -->|Revise| V[revise<br/><i>primary fixes the answer</i>]
@@ -144,13 +147,14 @@ runs use the local copy.
 pytest -q
 ```
 
-69 small tests cover the pure functions: cosine similarity and the agreement threshold,
+71 small tests cover the pure functions: cosine similarity and the agreement threshold,
 parsing of the auditor's JSON (valid, fenced, invalid, out of range), verdict
 thresholds at their exact boundaries, the hallucination label rules, passage
 splitting, re-ranking and dropping off-topic evidence, the audit log (including "the
 API key is never written"), the graph's routing decisions, Georgian detection, the
-English translations for Georgian (search, ranking, audit, a new translation after a
-revision, quotes kept), the two-service settings and the error messages (rate limit,
+search keywords, the English translations for Georgian (ranking, audit, a new
+translation after a revision, quotes kept), the second answer's check when the models
+disagree, the two-service settings and the error messages (rate limit,
 wrong key, unknown model, busy service). They use fakes instead of real AI services
 and embeddings, so they need neither API keys nor internet.
 
@@ -226,17 +230,19 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
 
 - **Free tiers.** Gemini and Groq limit requests per minute and per day, and the limits
   change over time (Groq, November 2026: 1000 requests per day and 8000 tokens per
-  minute for each model). One question uses 6 requests (2 answers, 4 audit checks), plus
-  2 translations for Georgian; one audit uses about 3300 tokens. When a limit is hit, the
+  minute for each model). One question uses 7 requests (2 answers, 1 search query, 4 audit
+  checks), plus 1 translation for a Georgian answer and 1–2 more when the models
+  disagree; one audit uses about 3300 tokens. When a limit is hit, the
   app waits and retries (about 2, 4 and 8 s), and if it is still reached, it says so
   instead of crashing. Free tiers may also use what you send to improve their services,
   so do not type personal information.
 - **Internet required.** Both AI services and Wikipedia are online.
 - **Agreement ≠ truth.** Embeddings capture topic and meaning, not exact facts:
   "water boils at 100 °C" and "…at 90 °C" score 0.94. Two models can also agree on the
-  same mistake. That is why the audit and the evidence exist.
+  same mistake, or score just above the threshold while differing in a detail (then
+  the second answer is not checked). That is why the audit and the evidence exist.
 - **Wikipedia coverage.** Only English Wikipedia, only page introductions, searched
-  with the question text. Recent events, niche topics and non-encyclopedic questions
+  with a few keywords. Recent events, niche topics and non-encyclopedic questions
   (e.g. coding) often get weak or no evidence, and then the check falls back to
   general knowledge.
 - **Georgian.** Gemini writes good Georgian; the second model (Qwen) writes weaker
