@@ -1,12 +1,12 @@
 """The ModelProof workflow as a LangGraph graph.
 
-    START -> generate_answers -> compare -> audit -> finalize -> END
+    START -> generate_answers -> compare -> retrieve_evidence -> audit -> finalize -> END
                     |
                     +--(no model answered)--> END
 
 Each node is a small function: it reads the shared state and returns only the
-fields it changed. The real work happens in answers.py, agreement.py and
-auditor.py; this file only wires the steps together.
+fields it changed. The real work happens in answers.py, agreement.py,
+retrieval.py and auditor.py; this file only wires the steps together.
 
 Memory: the graph is compiled with a checkpointer (MemorySaver). LangGraph
 saves the state after every step under a `thread_id`, so each conversation
@@ -33,6 +33,7 @@ from agreement import Agreement, compare_answers
 from answers import ModelAnswer, ask_both, build_messages
 from auditor import CheckOutcome, CheckResult, Issue, run_audit
 from config import get_settings
+from retrieval import Passage, get_evidence
 
 
 @dataclass
@@ -44,6 +45,8 @@ class Turn:
     secondary: ModelAnswer
     agreement: Agreement | None = None
     agreement_error: str | None = None
+    evidence: list[Passage] = field(default_factory=list)
+    evidence_error: str | None = None
     audit: dict[str, CheckOutcome] = field(default_factory=dict)
     latency: dict[str, float] = field(default_factory=dict)  # seconds per step
 
@@ -77,6 +80,8 @@ class ChatState(TypedDict, total=False):
     secondary: ModelAnswer | None
     agreement: Agreement | None
     agreement_error: str | None
+    evidence: list[Passage]
+    evidence_error: str | None
     audit: dict[str, CheckOutcome]
     latency: dict[str, float]
     error: str | None
@@ -90,6 +95,8 @@ def new_question_input(question: str) -> dict[str, Any]:
         "secondary": None,
         "agreement": None,
         "agreement_error": None,
+        "evidence": [],
+        "evidence_error": None,
         "audit": {},
         "latency": {},
         "error": None,
@@ -154,12 +161,28 @@ def _final_answer(state: ChatState) -> str:
     return primary.text if primary.ok else secondary.text
 
 
+@timed("evidence")
+def retrieve_evidence(state: ChatState) -> dict:
+    """Find Wikipedia passages that can confirm or contradict the final answer."""
+    try:
+        evidence = get_evidence(
+            state["question"], _final_answer(state), get_settings().wiki_user_agent
+        )
+        return {"evidence": evidence}
+    # No internet, Wikipedia down, timeout...: the audit simply continues
+    # without evidence, and the UI says so.
+    except Exception as error:  # noqa: BLE001
+        return {"evidence_error": f"Wikipedia unavailable ({type(error).__name__}); checked without evidence."}
+
+
 @timed("audit")
 def audit(state: ChatState) -> dict:
     """Run the four checks on the final answer, in parallel."""
     limit = get_settings().history_messages
     recent = state.get("messages", [])[-limit:] if limit else []
-    return {"audit": run_audit(state["question"], _final_answer(state), recent)}
+    # The auditor sees each passage with its page title, so it knows the source.
+    evidence = [f"[{p.title}] {p.text}" for p in state.get("evidence", [])]
+    return {"audit": run_audit(state["question"], _final_answer(state), recent, evidence)}
 
 
 def finalize(state: ChatState) -> dict:
@@ -170,6 +193,8 @@ def finalize(state: ChatState) -> dict:
         secondary=state["secondary"],
         agreement=state.get("agreement"),
         agreement_error=state.get("agreement_error"),
+        evidence=state.get("evidence", []),
+        evidence_error=state.get("evidence_error"),
         audit=state.get("audit", {}),
         latency=state.get("latency", {}),
     )
@@ -193,7 +218,7 @@ def create_checkpointer() -> MemorySaver:
     LangGraph only restores types it knows are safe (loading arbitrary types
     from saved data is a security risk), so we list ours explicitly.
     """
-    own_types = [ModelAnswer, Agreement, CheckResult, Issue, CheckOutcome, Turn]
+    own_types = [ModelAnswer, Agreement, Passage, CheckResult, Issue, CheckOutcome, Turn]
     serializer = JsonPlusSerializer(
         allowed_msgpack_modules=[(cls.__module__, cls.__name__) for cls in own_types]
     )
@@ -205,12 +230,14 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph = StateGraph(ChatState)
     graph.add_node("generate_answers", generate_answers)
     graph.add_node("compare", compare)
+    graph.add_node("retrieve_evidence", retrieve_evidence)
     graph.add_node("audit", audit)
     graph.add_node("finalize", finalize)
 
     graph.add_edge(START, "generate_answers")
     graph.add_conditional_edges("generate_answers", route_after_answers, ["compare", END])
-    graph.add_edge("compare", "audit")
+    graph.add_edge("compare", "retrieve_evidence")
+    graph.add_edge("retrieve_evidence", "audit")
     graph.add_edge("audit", "finalize")
     graph.add_edge("finalize", END)
     return graph.compile(checkpointer=checkpointer or create_checkpointer())
