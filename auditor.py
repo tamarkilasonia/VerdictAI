@@ -313,3 +313,17 @@ def run_audit(
 def needs_revision(audit: dict[str, CheckOutcome]) -> bool:
     """True if any available check failed (❌). Unavailable checks do not count."""
     return any(outcome.status == "fail" for outcome in audit.values())
+
+
+def describe_problems(audit: dict[str, CheckOutcome]) -> list[str]:
+    """Readable list of what the audit found (⚠️ and ❌ checks), for the reviser."""
+    problems = []
+    for check, outcome in audit.items():
+        if outcome.result is None or outcome.status == "pass":
+            continue
+        for issue in outcome.result.issues:
+            quote = f'"{issue.quote}": ' if issue.quote else ""
+            problems.append(f"{check}: {quote}{issue.reason}")
+        if not outcome.result.issues:  # a bad score without details
+            problems.append(f"{check}: scored {outcome.result.score:.2f} ({outcome.status})")
+    return problems
