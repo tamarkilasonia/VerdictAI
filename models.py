@@ -38,9 +38,15 @@ except ImportError:
 def _provider_options(settings: Settings, json_schema: dict | None) -> dict[str, Any]:
     """Translate our generic options into the parameter names each provider expects."""
     if settings.model_provider == "ollama":
+        client_kwargs: dict[str, Any] = {"timeout": REQUEST_TIMEOUT_SECONDS}
+        if settings.model_api_key:
+            # Only Ollama Cloud needs a key; a local Ollama server ignores it.
+            client_kwargs["headers"] = {
+                "Authorization": f"Bearer {settings.model_api_key}"
+            }
         options: dict[str, Any] = {
             "base_url": settings.model_base_url,
-            "client_kwargs": {"timeout": REQUEST_TIMEOUT_SECONDS},
+            "client_kwargs": client_kwargs,
         }
         if json_schema is not None:
             # Ollama can force the output to match a JSON schema. This is much
@@ -97,7 +103,12 @@ def friendly_error(error: Exception, model_name: str = "") -> str:
         )
     if isinstance(error, (TimeoutError, httpx.TimeoutException)):
         return f"The model {model_name!r} took too long to answer. Please try again."
-    # Ollama answers HTTP 404 when the model has not been downloaded yet.
-    if getattr(error, "status_code", None) == 404 and settings.model_provider == "ollama":
-        return f"Model {model_name!r} is not installed. Run: ollama pull {model_name}"
+    status = getattr(error, "status_code", None)
+    if status in (401, 403):
+        return "The API key was rejected. Check MODEL_API_KEY in .env."
+    # Ollama answers HTTP 404 when the model does not exist on that server.
+    if status == 404 and settings.model_provider == "ollama":
+        if "localhost" in settings.model_base_url or "127.0.0.1" in settings.model_base_url:
+            return f"Model {model_name!r} is not installed. Run: ollama pull {model_name}"
+        return f"Model {model_name!r} is not available at {settings.model_base_url}."
     return f"Model {model_name!r} failed: {type(error).__name__}: {error}"
