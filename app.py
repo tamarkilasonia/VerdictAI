@@ -371,7 +371,7 @@ def main() -> None:
                 return
         st.rerun()
 
-    question = st.chat_input("Ask a question in English…")
+    question = st.chat_input("Ask a question…")
     if question:
         if waiting:
             # A new question means "keep the previous answer": close that turn
