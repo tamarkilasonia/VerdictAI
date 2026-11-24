@@ -282,3 +282,32 @@ def test_pages_are_read_from_document_passage_titles():
 def test_document_answers_start_with_the_document_says():
     text = documents.document_question("Was Caesar killed in 34 BC?", [Passage("w.pdf, page 1", "", "t")])
     assert 'Begin your answer with "The document says"' in text and "never with Yes or No" in text
+
+
+def test_per_minute_limit_waits_and_tries_the_batch_again(monkeypatch):
+    calls, waits = [], []
+    limited = "Audit unavailable: Free usage limit reached for 'a'. Wait a minute and try again."
+    outcomes = iter([fake_audit(error=limited), fake_audit()])
+
+    def run_audit(*args):
+        calls.append(1)
+        return next(outcomes)(*args)
+
+    monkeypatch.setattr(factcheck, "extract_claims", lambda document: [CAESAR])
+    monkeypatch.setattr(factcheck, "get_evidence", lambda q, a, ua: WIKI[CAESAR.text])
+    monkeypatch.setattr(factcheck, "run_audit", run_audit)
+    monkeypatch.setattr(factcheck.time, "sleep", waits.append)
+    check = factcheck.fact_check(Document("d.pdf", 1, [], np.zeros((0, 2))))
+    assert len(calls) == 2 and waits == [factcheck.PER_MINUTE_LIMIT_WAIT]
+    assert check.results[0].status == CONFIRMED
+
+
+def test_daily_limit_is_not_waited_for(monkeypatch):
+    waits = []
+    daily = "Audit unavailable: Today's free limit for 'a' is used up."
+    monkeypatch.setattr(factcheck, "extract_claims", lambda document: [CAESAR])
+    monkeypatch.setattr(factcheck, "get_evidence", lambda q, a, ua: WIKI[CAESAR.text])
+    monkeypatch.setattr(factcheck, "run_audit", fake_audit(error=daily))
+    monkeypatch.setattr(factcheck.time, "sleep", waits.append)
+    check = factcheck.fact_check(Document("d.pdf", 1, [], np.zeros((0, 2))))
+    assert waits == [] and check.results[0].status == UNCHECKED

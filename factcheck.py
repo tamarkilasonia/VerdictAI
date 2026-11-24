@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -41,6 +42,11 @@ MAX_CLAIMS = 20
 CLAIMS_PER_AUDIT = 5  # one auditor request checks this many claims (saves Groq's limit)
 PAGES_PER_EXTRACTION = 3  # pages read per extraction request (keeps each reply short)
 WIKIPEDIA_WORKERS = 4  # parallel Wikipedia searches; few, to be polite to Wikimedia
+# Groq allows 8,000 tokens per minute per model and one batch uses ~3,000, so
+# the 4th batch in a row hit the limit (tested). Then the check waits this
+# long and tries that batch once more. A used-up DAILY limit is not retried.
+PER_MINUTE_LIMIT_WAIT = 30
+PER_MINUTE_LIMIT_MESSAGE = "Free usage limit reached"  # see models.friendly_error
 
 CONFIRMED, CONTRADICTED, UNCHECKED = "confirmed", "contradicted", "unchecked"
 RESULT_LABELS = {
@@ -296,9 +302,21 @@ def fact_check(
     report("Checking facts…", 0, total)
     for start in range(0, total, CLAIMS_PER_AUDIT):
         end = start + CLAIMS_PER_AUDIT
-        check.results += check_batch(claims[start:end], evidence[start:end])
+        results = check_batch(claims[start:end], evidence[start:end])
+        if hit_per_minute_limit(results):
+            report("Waiting for the service's per-minute limit…", len(check.results), total)
+            time.sleep(PER_MINUTE_LIMIT_WAIT)
+            results = check_batch(claims[start:end], evidence[start:end])
+        check.results += results
         report("Checking facts…", len(check.results), total)
     return check
+
+
+def hit_per_minute_limit(results: list[ClaimResult]) -> bool:
+    """True if a whole batch failed because of the per-minute (not daily) limit."""
+    return bool(results) and all(
+        r.status == UNCHECKED and PER_MINUTE_LIMIT_MESSAGE in r.note for r in results
+    )
 
 
 # ------------------------------------------------------------------ warnings
