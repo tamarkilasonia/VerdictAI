@@ -8,7 +8,28 @@ html.escape(), so it can never inject HTML into the page.
 from __future__ import annotations
 
 import base64
+import re
 from html import escape
+
+# ------------------------------------------------------------------ formulas
+
+# Models write formulas in LaTeX as \( ... \) (inline) or \[ ... \] (display),
+# but st.markdown only renders $...$ and $$...$$. In Markdown "\(" just means
+# "(", so the answer showed "(PE = 12 \times 9.8 \times 2.5 = 294\ \text{J})".
+_DISPLAY_MATH = re.compile(r"\\\[(.+?)\\\]", re.DOTALL)
+_INLINE_MATH = re.compile(r"\\\((.+?)\\\)", re.DOTALL)
+
+
+def latex_for_streamlit(text: str) -> str:
+    """Rewrite \\( \\) and \\[ \\] formulas as $ $ and $$ $$ so Streamlit renders them.
+
+    Code blocks (``` ... ```) are left exactly as they are.
+    """
+    parts = text.split("```")
+    for i in range(0, len(parts), 2):  # even parts are outside code blocks
+        part = _DISPLAY_MATH.sub(lambda m: f"$${m.group(1).strip()}$$", parts[i])
+        parts[i] = _INLINE_MATH.sub(lambda m: f"${m.group(1).strip()}$", part)
+    return "```".join(parts)
 
 # ------------------------------------------------------------------ colours
 

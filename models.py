@@ -15,10 +15,13 @@ from langchain_core.runnables import Runnable
 
 from config import ModelSpec
 
-# Cloud models usually answer in seconds (measured 0.3-10 s); the limit only
-# stops a stuck request from freezing the app. With 5 attempts a dead service
-# is reported after a few minutes at most.
-REQUEST_TIMEOUT_SECONDS = 30
+# Cloud models usually answer in seconds (measured on Groq: 0.2-8 s); the limit
+# only stops a stuck request from freezing the app. It used to be 30 s with 5
+# attempts: an overloaded Gemini then cost ~38 s PER CALL, and a question that
+# needs several calls took over 5 minutes. Now a dead service is given up on
+# after about 15 s, and the other model's answer is used.
+REQUEST_TIMEOUT_SECONDS = 15
+MAX_ATTEMPTS = 2
 
 # Only temporary problems are worth retrying: the service could not be reached,
 # asked us to slow down (free tiers allow a few requests per minute) or was
@@ -72,12 +75,12 @@ def get_chat_model(spec: ModelSpec, *, temperature: float = 0.7, json_mode: bool
     return model.with_retry(
         retry_if_exception_type=should_retry,
         wait_exponential_jitter=True,
-        # Waits of about 2, 4, 8 and 16 seconds (~30 s in total). Groq's free
-        # tier allows 8000 tokens per minute per model, and for Qwen only 1000
-        # OUTPUT tokens per minute; one audit uses about 3300 tokens. When the
-        # limit is hit, Groq said "try again in 19.44s", so ~14 s was too short.
+        # One retry after about 2 s: enough for a brief hiccup. Waiting longer
+        # for Groq's per-minute token limit (8000 per model; it once said "try
+        # again in 19.44s") is no longer needed: the audit is one request
+        # per answer now (auditor.py), so it stays well below the limit.
         exponential_jitter_params={"initial": 2},
-        stop_after_attempt=5,
+        stop_after_attempt=MAX_ATTEMPTS,
     )
 
 
@@ -99,7 +102,7 @@ def friendly_error(error: Exception, spec: ModelSpec) -> str:
     if isinstance(error, (openai.AuthenticationError, openai.PermissionDeniedError)):
         return (
             f"The API key for {name!r} was rejected. Check it in .env "
-            "(PRIMARY_API_KEY for Gemini, SECONDARY_API_KEY for Groq)."
+            "(PRIMARY_API_KEY for the main model, SECONDARY_API_KEY for the second one)."
         )
     if is_daily_limit(error):
         return (
