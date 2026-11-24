@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from config import LOG_PATH, Settings
-from retrieval import is_georgian
 
 if TYPE_CHECKING:  # only for type hints; avoids a circular import with graph.py
     from graph import Turn
@@ -63,7 +62,6 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
         "timestamp": _timestamp(),
         "thread_id": thread_id,
         "question": turn.question,
-        "language": "ka" if is_georgian(turn.question) else "en",
         "models": _models(settings),
         "answers": {"primary": turn.primary.text, "secondary": turn.secondary.text},
         "final_answer": turn.final_answer,
@@ -71,12 +69,9 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
         "shown_answer_model": turn.shown[0] if turn.shown else None,
         # Wikipedia's own answer, shown when no AI answer passed.
         "wikipedia_answer_url": turn.wiki_answer.url if turn.wiki_answer and not turn.shown else None,
-        "secondary_english_answer": turn.secondary.english_text or None,
         "agreement_score": turn.agreement.score if turn.agreement else None,
         "search_query": turn.search_query,
-        "answer_translation": turn.answer_translation or None,
         "evidence_urls": sorted({passage.url for passage in turn.evidence}),
-        "georgian_source_urls": sorted({passage.url for passage in turn.georgian_sources}) or None,
         "audit_scores": _scores(turn.audit),
         "secondary_audit_scores": _scores(turn.secondary_audit) or None,
         "original_audit_scores": _scores(turn.original_audit) if turn.revisions else None,

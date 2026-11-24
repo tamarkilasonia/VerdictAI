@@ -29,7 +29,7 @@ import operator
 from concurrent.futures import ThreadPoolExecutor
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from functools import wraps
 from typing import Annotated, Any, TypedDict
 
@@ -44,15 +44,7 @@ from langgraph.types import interrupt
 
 from agreement import Agreement, compare_answers
 from audit_log import append_entry, build_entry, build_failure_entry
-from answers import (
-    ModelAnswer,
-    ask_both,
-    build_messages,
-    make_search_query,
-    revise_answer,
-    translate_to_english,
-    translate_to_georgian,
-)
+from answers import ModelAnswer, ask_both, build_messages, make_search_query, revise_answer
 from auditor import (
     CheckOutcome,
     CheckResult,
@@ -62,15 +54,7 @@ from auditor import (
     run_audit,
 )
 from config import MAX_REVISIONS, get_settings
-from retrieval import (
-    GEORGIAN_WIKIPEDIA_API,
-    WIKIPEDIA_API,
-    Passage,
-    get_evidence,
-    get_georgian_sources,
-    is_georgian,
-    wikipedia_answer,
-)
+from retrieval import Passage, get_evidence, wikipedia_answer
 
 
 # Shown instead of an answer when both answers failed the audit: a wrong
@@ -80,20 +64,11 @@ from retrieval import (
 # Why no AI answer is shown: "failed" (a check found a problem) or "unchecked"
 # (the auditor could not run, e.g. a rate limit).
 WHY_NO_AI_ANSWER = {
-    ("failed", "en"): "The AI answers did not pass the fact check.",
-    ("failed", "ka"): "AI-ების პასუხებმა ფაქტების შემოწმება ვერ გაიარა.",
-    ("unchecked", "en"): "The AI answers could not be fact-checked right now (service limit).",
-    ("unchecked", "ka"): "AI-ების პასუხების შემოწმება ახლა ვერ მოხერხდა (სერვისის ლიმიტი).",
+    "failed": "The AI answers did not pass the fact check.",
+    "unchecked": "The AI answers could not be fact-checked right now (service limit).",
 }
-FROM_WIKIPEDIA = {
-    "en": "Here is what Wikipedia says:",
-    "ka": "აი, რა წერია Wikipedia-ში:",
-}
-TRANSLATED_NOTE = "(ინგლისური Wikipedia-დან; თარგმანი: Gemini)"
-DONT_KNOW = {
-    "en": "So I don't know a reliable answer to this (see the analysis on the right).",
-    "ka": "ამიტომ ამ კითხვაზე სანდო პასუხი არ ვიცი (ანალიზი იხილეთ მარჯვნივ).",
-}
+FROM_WIKIPEDIA = "Here is what Wikipedia says:"
+DONT_KNOW = "So I don't know a reliable answer to this (see the analysis on the right)."
 
 
 @dataclass
@@ -106,11 +81,9 @@ class Turn:
     agreement: Agreement | None = None
     agreement_error: str | None = None
     evidence: list[Passage] = field(default_factory=list)
-    georgian_sources: list[Passage] = field(default_factory=list)  # shown only, not audited
     evidence_error: str | None = None
-    search_query: str = ""  # what Wikipedia was searched for (English)
+    search_query: str = ""  # what Wikipedia was searched for
     audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of the final answer
-    answer_translation: str = ""  # English version of a Georgian answer (ranked + audited)
     secondary_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # of SECONDARY's answer
     wiki_answer: Passage | None = None  # Wikipedia's own answer, used if no AI answer passed
     revisions: list[str] = field(default_factory=list)  # corrected answers, oldest first
@@ -163,20 +136,16 @@ class Turn:
 
     @property
     def reply(self) -> str:
-        """What the user sees and the models remember, in the question's language:
-        the AI answer that passed, else Wikipedia's text, else "I don't know"."""
+        """What the user sees and the models remember: the AI answer that
+        passed, else Wikipedia's text, else "I don't know"."""
         if self.shown:
             return self.shown[1]
-        language = "ka" if is_georgian(self.question) else "en"
-        why = WHY_NO_AI_ANSWER[("failed" if self.facts_checked else "unchecked", language)]
+        why = WHY_NO_AI_ANSWER["failed" if self.facts_checked else "unchecked"]
         wiki = self.wiki_answer
         if wiki is None:
-            return f"{why} {DONT_KNOW[language]}"
+            return f"{why} {DONT_KNOW}"
         quote = "\n".join(f"> {line}" if line else ">" for line in wiki.text.splitlines())
-        source = f"— [{wiki.title}]({wiki.url})"
-        if wiki.english_text:
-            source += f" {TRANSLATED_NOTE}"
-        return f"{why} {FROM_WIKIPEDIA[language]}\n\n{quote}\n\n{source}"
+        return f"{why} {FROM_WIKIPEDIA}\n\n{quote}\n\n— [{wiki.title}]({wiki.url})"
 
 
 class ChatState(TypedDict, total=False):
@@ -199,11 +168,9 @@ class ChatState(TypedDict, total=False):
     agreement: Agreement | None
     agreement_error: str | None
     evidence: list[Passage]
-    georgian_sources: list[Passage]
     evidence_error: str | None
     search_query: str
     audit: dict[str, CheckOutcome]
-    answer_translation: str
     secondary_audit: dict[str, CheckOutcome]
     wiki_answer: Passage | None
     revisions: list[str]
@@ -223,11 +190,9 @@ def new_question_input(question: str) -> dict[str, Any]:
         "agreement": None,
         "agreement_error": None,
         "evidence": [],
-        "georgian_sources": [],
         "evidence_error": None,
         "search_query": "",
         "audit": {},
-        "answer_translation": "",
         "secondary_audit": {},
         "wiki_answer": None,
         "revisions": [],
@@ -249,11 +214,9 @@ def turn_from_state(state: ChatState) -> Turn:
         agreement=state.get("agreement"),
         agreement_error=state.get("agreement_error"),
         evidence=state.get("evidence", []),
-        georgian_sources=state.get("georgian_sources", []),
         evidence_error=state.get("evidence_error"),
         search_query=state.get("search_query", ""),
         audit=state.get("audit", {}),
-        answer_translation=state.get("answer_translation", ""),
         secondary_audit=state.get("secondary_audit", {}),
         wiki_answer=state.get("wiki_answer"),
         revisions=state.get("revisions", []),
@@ -297,16 +260,9 @@ def _thread_id() -> str:
 
 
 def _evidence_texts(state: ChatState) -> list[str]:
-    """What the auditor and the reviser read: English Wikipedia passages, plus
-    English translations of Georgian pages that English Wikipedia lacks."""
+    """What the auditor and the reviser read: the Wikipedia passages."""
     # Each passage keeps its page title, so the model knows the source.
-    texts = [f"[{p.title}] {p.text}" for p in state.get("evidence", [])]
-    texts += [
-        f"[{p.title}, Georgian Wikipedia, translated] {p.english_text}"
-        for p in state.get("georgian_sources", [])
-        if p.english_text
-    ]
-    return texts
+    return [f"[{p.title}] {p.text}" for p in state.get("evidence", [])]
 
 
 # ------------------------------------------------------------------ nodes
@@ -319,21 +275,7 @@ def generate_answers(state: ChatState) -> dict:
     messages = build_messages(
         state.get("messages", []), state["question"], settings.history_messages
     )
-    # SECONDARY (Qwen) writes poor Georgian: asked directly, it named a made-up
-    # author for "The Knight in the Panther's Skin" and garbled names; asked in
-    # English, it answered correctly. So a Georgian question goes to it in
-    # English, and PRIMARY (Gemini) translates its answer back into Georgian.
-    english_question = _translation(state["question"])
-    secondary_messages = (
-        [*messages[:-1], HumanMessage(english_question)] if english_question else None
-    )
-    primary, secondary = ask_both(
-        settings.primary, settings.secondary, messages, secondary_messages
-    )
-    if secondary_messages and secondary.ok:
-        georgian = _to_georgian(secondary.text)
-        if georgian:  # if translating fails, the English answer is shown as it is
-            secondary = replace(secondary, text=georgian, english_text=secondary.text)
+    primary, secondary = ask_both(settings.primary, settings.secondary, messages)
     update: dict[str, Any] = {"primary": primary, "secondary": secondary}
     if not primary.ok and not secondary.ok:
         update["error"] = f"No model could answer.\n\n- {primary.error}\n- {secondary.error}"
@@ -363,154 +305,63 @@ def compare(state: ChatState) -> dict:
         return {"agreement_error": f"Agreement check unavailable: {error}"}
 
 
-def _translation(text: str) -> str:
-    """PRIMARY's English translation of a Georgian text.
-
-    Returns "" if the text is already English, or if the translation failed
-    (e.g. rate limit): the caller then simply uses the original text.
-    """
-    if not is_georgian(text):
-        return ""
-    try:
-        return translate_to_english(get_settings().primary, text)
-    except Exception:  # noqa: BLE001 - a failed translation must not stop the turn
-        return ""
-
-
-def _to_georgian(text: str) -> str:
-    """PRIMARY's Georgian translation of an English text; "" if that fails."""
-    try:
-        return translate_to_georgian(get_settings().primary, text)
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _search_query(question: str, language: str = "English") -> str:
+def _search_query(question: str) -> str:
     """A few keywords for Wikipedia; the question itself if that fails."""
     try:
-        return make_search_query(get_settings().primary, question, language) or question
+        return make_search_query(get_settings().primary, question) or question
     except Exception:  # noqa: BLE001 - e.g. rate limit: search with the question
         return question
-
-
-def _georgian_sources(state: ChatState, english_evidence: list[Passage]) -> list[Passage]:
-    """Georgian Wikipedia passages for a Georgian question (see retrieval.py).
-
-    Passages from pages that English Wikipedia lacks are translated into
-    English, so the auditor can use them: it misreads Georgian text.
-    """
-    sources = get_georgian_sources(
-        [p.title for p in english_evidence],
-        _search_query(state["question"], "Georgian"),
-        _final_answer(state),
-        get_settings().wiki_user_agent,
-    )
-    for passage in sources:
-        if passage.only_in_georgian:
-            passage.english_text = _translation(passage.text)
-    return sources
 
 
 @timed("evidence")
 def retrieve_evidence(state: ChatState) -> dict:
     """Find Wikipedia passages that can confirm or contradict the final answer.
 
-    The search uses a few English keywords, not the whole question. A Georgian
-    answer is translated into English, because English passages are ranked more
-    precisely against an English answer; the translation is kept for the audit
-    too, so it is made only once.
+    The search uses a few keywords, not the whole question.
     """
     answer = _final_answer(state)
     query = _search_query(state["question"])
-    translation = _translation(answer)
-    update: dict[str, Any] = {"search_query": query, "answer_translation": translation}
+    update: dict[str, Any] = {"search_query": query}
     try:
-        update["evidence"] = get_evidence(query, translation or answer, get_settings().wiki_user_agent)
+        update["evidence"] = get_evidence(query, answer, get_settings().wiki_user_agent)
     # No internet, Wikipedia down, timeout...: the audit simply continues
     # without evidence, and the UI says so.
     except Exception as error:  # noqa: BLE001
-        update["evidence_error"] = f"English Wikipedia unavailable ({type(error).__name__})."
-    if is_georgian(state["question"]):
-        # Georgian Wikipedia too: to read the sources in Georgian, and for
-        # Georgian topics that English Wikipedia does not cover. A failure
-        # here only means fewer sources.
-        try:
-            update["georgian_sources"] = _georgian_sources(state, update.get("evidence", []))
-        except Exception:  # noqa: BLE001
-            pass
+        update["evidence_error"] = f"Wikipedia unavailable ({type(error).__name__})."
     try:
-        update["wiki_answer"] = _wikipedia_answer(
-            state["question"], update.get("georgian_sources", []), update.get("evidence", [])
+        # Wikipedia's own answer, kept ready in case no AI answer passes.
+        update["wiki_answer"] = wikipedia_answer(
+            state["question"], update.get("evidence", []), get_settings().wiki_user_agent
         )
     except Exception:  # noqa: BLE001 - then the fallback is "I don't know"
         pass
     return update
 
 
-def _wikipedia_answer(
-    question: str, georgian: list[Passage], english: list[Passage]
-) -> Passage | None:
-    """Wikipedia's own answer, kept ready in case no AI answer passes.
-
-    A Georgian question is answered from Georgian Wikipedia when it has a
-    relevant passage; otherwise from English Wikipedia, translated by PRIMARY
-    (the original stays in `english_text`, and the reply says it is a
-    translation). An English question is answered from English Wikipedia.
-    """
-    user_agent = get_settings().wiki_user_agent
-    if is_georgian(question):
-        answer = wikipedia_answer(question, georgian, user_agent, GEORGIAN_WIKIPEDIA_API)
-        if answer is not None:
-            return answer
-        answer = wikipedia_answer(question, english, user_agent, WIKIPEDIA_API)
-        georgian_text = _to_georgian(answer.text) if answer else ""
-        if not georgian_text:
-            return answer  # better English Wikipedia than nothing
-        return replace(answer, text=georgian_text, english_text=answer.text)
-    return wikipedia_answer(question, english, user_agent, WIKIPEDIA_API)
-
-
-def _audit_answer(state: ChatState, text: str, translation: str = "") -> dict[str, CheckOutcome]:
-    """The four checks on one answer; a Georgian answer is checked in English."""
-    english = translation or _translation(text)
-    return run_audit(
-        state["question"], english or text, _recent_history(state), _evidence_texts(state)
-    )
+def _audit_answer(state: ChatState, text: str) -> dict[str, CheckOutcome]:
+    """The four checks on one answer."""
+    return run_audit(state["question"], text, _recent_history(state), _evidence_texts(state))
 
 
 @timed("audit")
 def audit(state: ChatState) -> dict:
     """Run the four checks on BOTH answers, so the user can compare them.
 
-    A Georgian answer is audited in its English translation, because the
-    auditor model misreads Georgian: in tests it read "შოტლანდიელმა" (Scottish)
-    as "Dutch" and flagged a correct answer as contradicted, 3 times out of 3.
-    With the translation the false alarm was gone, and a wrong answer was
-    still caught 3 times out of 3.
-
     SECONDARY is audited only once: a revision changes PRIMARY's answer, not
     SECONDARY's. The audits decide which answer the user sees (Turn.shown).
     """
     answer = _final_answer(state)
-    # revise() clears the translation, so a revised answer is translated anew.
-    translation = state.get("answer_translation") or _translation(answer)
     secondary = state["secondary"]
     audit_secondary = (
         state["primary"].ok and secondary.ok and not state.get("secondary_audit")
     )
     # Both audits at the same time: the user waits for one, not for two.
     with ThreadPoolExecutor(max_workers=2) as pool:
-        primary_job = pool.submit(_audit_answer, state, answer, translation)
-        # SECONDARY's original English answer is audited directly when it exists.
+        primary_job = pool.submit(_audit_answer, state, answer)
         secondary_job = (
-            pool.submit(_audit_answer, state, secondary.text, secondary.english_text)
-            if audit_secondary
-            else None
+            pool.submit(_audit_answer, state, secondary.text) if audit_secondary else None
         )
-        update: dict[str, Any] = {
-            "audit": primary_job.result(),
-            "answer_translation": translation or "",
-        }
+        update: dict[str, Any] = {"audit": primary_job.result()}
         if secondary_job is not None:
             update["secondary_audit"] = secondary_job.result()
     return update
@@ -548,7 +399,6 @@ def revise(state: ChatState) -> dict:
     update: dict[str, Any] = {
         "revisions": state.get("revisions", []) + [revised.text],
         "revise_error": None,
-        "answer_translation": "",  # belonged to the old answer; audit() makes a new one
     }
     if not state.get("revisions"):  # first revision: keep the original verdict
         update["original_audit"] = state["audit"]

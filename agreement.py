@@ -13,10 +13,9 @@ from functools import lru_cache
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-# Multilingual (50+ languages, including Georgian), ~470 MB, free and local.
-# The English-only all-MiniLM-L6-v2 scored a Georgian sentence and its English
-# translation at only 0.21 (it saw letters, not meaning); this model gives 0.59
-# while unrelated pairs stay around 0.2, and English results are unchanged.
+# ~470 MB, free and local. Chosen when the app also answered in Georgian; it
+# works as well for English, and the thresholds (AGREEMENT_THRESHOLD in .env,
+# MIN_RELEVANCE in retrieval.py) were measured with it, so it is kept.
 # Texts longer than ~128 tokens are cut off.
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
