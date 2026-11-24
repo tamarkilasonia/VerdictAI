@@ -39,9 +39,13 @@ is written in the language of the question.
    *შემოწმებაშიც*). Otherwise the check relies on English passages: Georgian
    introductions are usually shorter (the Georgian *Penicillin* introduction says
    nothing about its discovery), and the auditor misreads Georgian text.
-4. **Audit of both answers.** Four checks run in parallel on Groq for **each** answer,
-   each returning a validated JSON result: `score` (0–1) plus `issues` (`quote` +
-   `reason`). The panel compares the two in one table and shows both answers in full.
+4. **Audit of both answers.** Four checks run on Groq for **each** answer, each
+   returning a validated JSON result: `score` (0–1) plus `issues` (`quote` +
+   `reason`). All four go to the auditor in **one** request per answer: four separate
+   requests hit Groq's per-minute token limit and made the audit wait 18–37 s. If the
+   combined reply cannot be parsed, the four checks run as separate requests instead
+   (on 13 test cases the combined audit matched the expected verdicts 50/52 times,
+   the separate checks 49/52). The panel compares the two in one table and shows both answers in full.
    A Georgian answer is audited in
    its English translation (shown in the audit panel), because the auditor model
    misreads Georgian; see [How reliable is the audit?](#how-reliable-is-the-audit).
@@ -82,7 +86,7 @@ flowchart TD
     G -->|no model answered| E([END])
     G --> C[compare<br/><i>embeddings + cosine similarity</i>]
     C --> R[retrieve_evidence<br/><i>Wikipedia search + re-ranking<br/>English keywords; Georgian answer translated</i>]
-    R --> A[audit<br/><i>4 checks on each answer,<br/>all in parallel</i>]
+    R --> A[audit<br/><i>4 checks on each answer,<br/>one request per answer</i>]
     A -->|"no answer passed and revisions < 2"| H[human_review<br/><i>interrupt: waits for the user</i>]
     A -->|"an answer passed (or no revisions left)"| F[finalize<br/><i>ONE answer or 'I don't know';<br/>memory + audit log</i>]
     H -->|Revise| V[revise<br/><i>primary fixes the answer</i>]
@@ -124,6 +128,12 @@ good but took 20–44 s per answer); `qwen/qwen3.8-27b` is the second opinion (G
 retired `llama-3.3-70b-versatile`); `openai/gpt-oss-120b` is the auditor. Model names
 change over time: if one stops working, pick a current one in Google AI Studio or the
 Groq console and put it in `.env`.
+
+When Gemini's free tier is overloaded (it answered every request with `503` for hours in
+November 2026), the app runs entirely on Groq by pointing the `PRIMARY_` settings at it:
+`PRIMARY_MODEL=openai/gpt-oss-20b`, `PRIMARY_BASE_URL=https://api.groq.com/openai/v1` and
+the Groq key. Measured: an English question takes 3.5–5 s, a Georgian one about 11 s.
+Georgian answers are weaker than Gemini's.
 
 The project first ran on two small local models (Ollama: `llama3.2`, `qwen2.5:3b`).
 They could not write Georgian (tested: their Georgian answers were nonsense), so the
@@ -274,13 +284,13 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
   limit is the **auditor's 200,000 tokens per day**: one question's two audits use
   about 6,600, so roughly **30 questions a day** can be fully fact-checked. After that,
   the chat shows Wikipedia's text instead of unchecked AI answers, and the limit frees
-  up gradually over the next hours. One question uses 11 requests (2 answers, 1 search query, 4 audit
-  checks for each answer), plus up to 7 for a Georgian question (the question
+  up gradually over the next hours. One question uses 5 requests (2 answers, 1 search query, 1 audit
+  request for each answer), plus up to 7 for a Georgian question (the question
   and Qwen's answer for Qwen's English route, Gemini's answer for the audit, Georgian
-  keywords, up to 3 translations of Georgian-only pages); the two audits use
-  about 6600 tokens. When a limit is hit, the
-  app waits and retries (about 2, 4, 8 and 16 s), and if it is still reached, it says so
-  instead of crashing. Free tiers may also use what you send to improve their services,
+  keywords, up to 3 translations of Georgian-only pages). When a limit is hit or a service is down, the app retries once after about 2 s and
+  gives up on a request after 15 s, then says so instead of crashing (it used to retry
+  for ~30 s per request, which made one question take minutes while Gemini was
+  overloaded). Free tiers may also use what you send to improve their services,
   so do not type personal information.
 - **Internet required.** Both AI services and Wikipedia are online.
 - **Agreement ≠ truth.** Embeddings capture topic and meaning, not exact facts:
