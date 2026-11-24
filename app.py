@@ -1,4 +1,4 @@
-"""Streamlit UI for ModelProof. Only UI code lives here; the logic is in other modules.
+"""Streamlit UI for VerdictAi. Only UI code lives here; the logic is in other modules.
 
 Run with:  streamlit run app.py
 """
@@ -17,8 +17,8 @@ from auditor import CheckOutcome
 from config import MAX_REVISIONS, Settings, get_settings
 from graph import Turn, build_graph, new_question_input, turn_from_state
 
-# A Material icon (not an emoji) as the browser-tab icon: two joined circles.
-st.set_page_config(page_title="ModelProof", page_icon=":material/join_inner:", layout="wide")
+# The VerdictAi "V" as the browser-tab icon.
+st.set_page_config(page_title="VerdictAi", page_icon=str(ui.MARK_FILE), layout="wide")
 
 CHECK_LABELS = {
     "hallucination": "Hallucination",

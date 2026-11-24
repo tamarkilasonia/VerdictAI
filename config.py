@@ -1,6 +1,6 @@
-"""Settings for ModelProof, read once from the .env file.
+"""Settings for VerdictAi, read once from the .env file.
 
-ModelProof uses two AI services (both free tiers, both reached through the
+VerdictAi uses two AI services (both free tiers, both reached through the
 OpenAI-compatible API format):
   AI 1 - Google Gemini: the primary answer (and revisions)
   AI 2 - Groq:          the second opinion and the auditor
@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 MAX_REVISIONS = 2
 LOG_PATH = Path("logs") / "audit_log.jsonl"
 
-DEFAULT_USER_AGENT = "ModelProof-py/0.1 (AI course project)"
+DEFAULT_USER_AGENT = "VerdictAi/0.1 (AI course project)"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
