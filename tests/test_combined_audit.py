@@ -2,6 +2,7 @@
 separate checks, plus the faster retry settings. No AI service is called."""
 
 import json
+from dataclasses import replace
 
 import httpx
 import openai
@@ -178,3 +179,36 @@ def test_reviser_still_gets_readable_problems():
 def test_a_stuck_service_is_given_up_on_quickly():
     assert models.REQUEST_TIMEOUT_SECONDS <= 15
     assert models.MAX_ATTEMPTS == 2
+
+
+# ------------------------------------------------------- low reasoning effort
+
+
+def test_gpt_oss_auditor_reasons_briefly():
+    assert auditor.auditor_reasoning_effort("openai/gpt-oss-120b") == "low"
+
+
+def test_other_auditor_models_keep_their_default():
+    # e.g. Qwen or Llama may reject the setting
+    assert auditor.auditor_reasoning_effort("qwen/qwen3.8-27b") is None
+
+
+def test_combined_audit_asks_for_low_reasoning(monkeypatch):
+    seen = {}
+
+    def fake_chat_model(spec, **kwargs):
+        seen.update(kwargs)
+        return FakeModel(GOOD_REPLY)
+
+    gpt_oss = replace(SETTINGS, auditor=ModelSpec("openai/gpt-oss-120b", "https://a.invalid", "k"))
+    monkeypatch.setattr(auditor, "get_settings", lambda: gpt_oss)
+    monkeypatch.setattr(auditor, "get_chat_model", fake_chat_model)
+    auditor.run_audit("Q?", "A.", [])
+    assert seen == {"temperature": 0.0, "json_mode": True, "reasoning_effort": "low"}
+
+
+def test_reasoning_effort_reaches_the_client():
+    spec = ModelSpec("openai/gpt-oss-120b", "https://a.invalid", "k")
+    model = models.get_chat_model(spec, temperature=0.0, reasoning_effort="low")
+    assert model.bound.reasoning_effort == "low"
+    assert models.get_chat_model(spec).bound.reasoning_effort is None
