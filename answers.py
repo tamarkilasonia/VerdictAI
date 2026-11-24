@@ -59,15 +59,29 @@ def ask_model(spec: ModelSpec, messages: list[BaseMessage], temperature: float =
     return reply_text(get_chat_model(spec, temperature=temperature).invoke(messages))
 
 
+EMPTY_REPLY_ATTEMPTS = 2  # the first reply and one more try
+
+
 def _ask_safely(spec: ModelSpec, messages: list[BaseMessage]) -> ModelAnswer:
     """Like ask_model, but never raises: a failure becomes an error message.
 
     This is what lets one model fail without taking the other one down.
+
+    An empty reply is asked for once more, and if it is empty again it counts
+    as a failure: gpt-oss-20b once returned "" for "Who wrote A Happy Nation?",
+    and the empty text was audited (intent alignment 0) as if it were an answer.
     """
     start = time.perf_counter()
     try:
-        text = ask_model(spec, messages)
-        return ModelAnswer(spec.name, text=text, seconds=time.perf_counter() - start)
+        for _ in range(EMPTY_REPLY_ATTEMPTS):
+            text = ask_model(spec, messages)
+            if text:
+                return ModelAnswer(spec.name, text=text, seconds=time.perf_counter() - start)
+        return ModelAnswer(
+            spec.name,
+            error=f"{spec.name!r} returned an empty answer.",
+            seconds=time.perf_counter() - start,
+        )
     except Exception as error:  # noqa: BLE001 - any failure is reported, not raised
         return ModelAnswer(
             spec.name,
