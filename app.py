@@ -109,7 +109,7 @@ def render_turn(turn: Turn, index: int) -> None:
             # No AI answer passed: Wikipedia's own text, or "I don't know".
             pill = ui.pill("Answer from Wikipedia", "info") if turn.wiki_answer else ui.pill("No reliable answer", "fail")
             st.html(ui.bubble_head(pill))
-            st.markdown(turn.reply)
+            st.markdown(ui.latex_for_streamlit(turn.reply))
             return
         model, text = turn.shown
         audit = shown_audit(turn)
@@ -121,7 +121,7 @@ def render_turn(turn: Turn, index: int) -> None:
             # Not hidden (a rate limit is not a wrong fact), but said openly.
             pills.append(ui.pill("Not fully checked", "warn"))
         st.html(ui.bubble_head(*pills))
-        st.markdown(text)
+        st.markdown(ui.latex_for_streamlit(text))
         st.html(audit_strip(audit))
         if turn.agreement_error:
             st.caption(turn.agreement_error)
@@ -195,16 +195,16 @@ def render_answers(turn: Turn) -> None:
                 reason = failed_checks(audit) or "both passed, the other was checked better"
             label = f"{model} · hidden: {reason}"
         with st.expander(label):
-            st.markdown(text)
+            st.markdown(ui.latex_for_streamlit(text))
             st.html(audit_strip(audit))
             if model == turn.secondary.model and turn.secondary.english_text:
                 # Georgian question: SECONDARY answered in English (checked as is),
                 # PRIMARY translated it into Georgian for reading.
                 st.caption(f"{model} answered in English; Gemini translated it. Original:")
-                st.markdown(turn.secondary.english_text)
+                st.markdown(ui.latex_for_streamlit(turn.secondary.english_text))
     if turn.revisions:
         with st.expander(f"{turn.primary.model} · original answer, before revising"):
-            st.markdown(turn.original_answer)
+            st.markdown(ui.latex_for_streamlit(turn.original_answer))
             st.html(audit_strip(turn.original_audit))
 
 
@@ -293,7 +293,7 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
             # The evidence was ranked against this translation, and the quotes
             # in "Issues found" come from it.
             with st.expander(f"{turn.primary.model} answer, as checked (English translation)"):
-                st.markdown(turn.answer_translation)
+                st.markdown(ui.latex_for_streamlit(turn.answer_translation))
         render_comparison(turn)
         render_answers(turn)
         render_issues(turn)
