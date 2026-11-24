@@ -244,11 +244,12 @@ def issue_card(check_label: str, status: str, quote: str, reason: str) -> str:
 def evidence_card(
     title: str, url: str, text: str, relevance: float, link_text: str = "Open on Wikipedia →"
 ) -> str:
+    # A part of an attached PDF has no URL, so it gets no link.
+    link = f'<a href="{escape(url)}" target="_blank" rel="noopener">{escape(link_text)}</a>' if url else ""
     return (
         '<details class="mp-evidence">'
         f'<summary><span>{escape(title)}</span><span class="mp-rel">relevance {relevance:.2f}</span></summary>'
-        f"<p>{escape(text)}</p>"
-        f'<a href="{escape(url)}" target="_blank" rel="noopener">{escape(link_text)}</a>'
+        f"<p>{escape(text)}</p>{link}"
         "</details>"
     )
 

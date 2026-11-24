@@ -54,6 +54,7 @@ from auditor import (
     run_audit,
 )
 from config import MAX_REVISIONS, get_settings
+from documents import NO_ANSWER_PASSED, NOT_FOUND, document_question
 from retrieval import Passage, get_evidence, wikipedia_answer
 
 
@@ -90,6 +91,10 @@ class Turn:
     original_audit: dict[str, CheckOutcome] = field(default_factory=dict)  # before revising
     revise_error: str | None = None
     latency: dict[str, float] = field(default_factory=dict)  # seconds per step
+    # Attached PDF (documents.py): its name, and True if no part of it matched
+    # the question, so the models were not asked. "" = no document: Wikipedia.
+    document_name: str = ""
+    not_in_document: bool = False
 
     @property
     def original_answer(self) -> str:
@@ -137,9 +142,14 @@ class Turn:
     @property
     def reply(self) -> str:
         """What the user sees and the models remember: the AI answer that
-        passed, else Wikipedia's text, else "I don't know"."""
+        passed, else Wikipedia's text, else "I don't know". With a document:
+        the answer that passed, else "the document does not answer this"."""
+        if self.not_in_document:
+            return NOT_FOUND.format(name=self.document_name)
         if self.shown:
             return self.shown[1]
+        if self.document_name:
+            return NO_ANSWER_PASSED.format(name=self.document_name)
         why = WHY_NO_AI_ANSWER["failed" if self.facts_checked else "unchecked"]
         wiki = self.wiki_answer
         if wiki is None:
@@ -179,12 +189,25 @@ class ChatState(TypedDict, total=False):
     revise_error: str | None
     latency: dict[str, float]
     error: str | None
+    document_name: str  # attached PDF, "" if none
+    document_passages: list[Passage]  # its parts closest to the question
+    not_in_document: bool
 
 
-def new_question_input(question: str) -> dict[str, Any]:
-    """Input for one graph run: the new question, with last question's fields cleared."""
+def new_question_input(
+    question: str, document_name: str = "", document_passages: list[Passage] | None = None
+) -> dict[str, Any]:
+    """Input for one graph run: the new question, with last question's fields cleared.
+
+    With an attached PDF, `document_passages` are its parts closest to the
+    question (documents.find_passages): the models answer from them and the
+    auditor checks against them instead of Wikipedia.
+    """
     return {
         "question": question,
+        "document_name": document_name,
+        "document_passages": document_passages or [],
+        "not_in_document": False,
         "primary": None,
         "secondary": None,
         "agreement": None,
@@ -223,6 +246,8 @@ def turn_from_state(state: ChatState) -> Turn:
         original_audit=state.get("original_audit", {}),
         revise_error=state.get("revise_error"),
         latency=state.get("latency", {}),
+        document_name=state.get("document_name", ""),
+        not_in_document=state.get("not_in_document", False),
     )
 
 
@@ -270,11 +295,22 @@ def _evidence_texts(state: ChatState) -> list[str]:
 
 @timed("answers")
 def generate_answers(state: ChatState) -> dict:
-    """Fan out: ask PRIMARY and SECONDARY in parallel (with recent history)."""
+    """Fan out: ask PRIMARY and SECONDARY in parallel (with recent history).
+
+    With a document, the models get its matching parts with the question; if
+    no part matched, they are not asked at all (route_after_answers).
+    """
     settings = get_settings()
-    messages = build_messages(
-        state.get("messages", []), state["question"], settings.history_messages
-    )
+    passages = state.get("document_passages", [])
+    if state.get("document_name") and not passages:
+        skipped = f"Not asked: no part of {state['document_name']} matched the question."
+        return {
+            "not_in_document": True,
+            "primary": ModelAnswer(settings.primary.name, error=skipped),
+            "secondary": ModelAnswer(settings.secondary.name, error=skipped),
+        }
+    question = document_question(state["question"], passages) if passages else state["question"]
+    messages = build_messages(state.get("messages", []), question, settings.history_messages)
     primary, secondary = ask_both(settings.primary, settings.secondary, messages)
     update: dict[str, Any] = {"primary": primary, "secondary": secondary}
     if not primary.ok and not secondary.ok:
@@ -317,8 +353,12 @@ def _search_query(question: str) -> str:
 def retrieve_evidence(state: ChatState) -> dict:
     """Find Wikipedia passages that can confirm or contradict the final answer.
 
-    The search uses a few keywords, not the whole question.
+    The search uses a few keywords, not the whole question. With a document,
+    its parts found for the question are used instead of Wikipedia.
     """
+    if state.get("document_name"):
+        # The document's parts found for the question are the evidence.
+        return {"evidence": state.get("document_passages", []), "search_query": ""}
     answer = _final_answer(state)
     query = _search_query(state["question"])
     update: dict[str, Any] = {"search_query": query}
@@ -421,7 +461,9 @@ def finalize(state: ChatState) -> dict:
 
 
 def route_after_answers(state: ChatState) -> str:
-    """Stop early if no model answered."""
+    """Stop early if no model answered; skip to the end if the document had nothing."""
+    if state.get("not_in_document"):
+        return "finalize"
     return END if state.get("error") else "compare"
 
 
@@ -473,7 +515,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node("finalize", finalize)
 
     graph.add_edge(START, "generate_answers")
-    graph.add_conditional_edges("generate_answers", route_after_answers, ["compare", END])
+    graph.add_conditional_edges("generate_answers", route_after_answers, ["compare", "finalize", END])
     graph.add_edge("compare", "retrieve_evidence")
     graph.add_edge("retrieve_evidence", "audit")
     graph.add_conditional_edges("audit", route_after_audit, ["human_review", "finalize"])

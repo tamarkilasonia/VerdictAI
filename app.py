@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 import ui
 from audit_log import read_log
+from documents import MAX_BYTES, DocumentError, find_passages, load_document
 from auditor import CheckOutcome
 from config import MAX_REVISIONS, Settings, get_settings
 from graph import Turn, build_graph, new_question_input, turn_from_state
@@ -50,6 +51,7 @@ def render_header() -> None:
     # A new thread_id = a new, empty conversation in the checkpointer.
     if new_chat.button("New conversation", icon=":material/add_comment:", width="stretch"):
         st.session_state.thread_id = uuid.uuid4().hex
+        st.session_state.pop("document", None)  # a new conversation starts without a file
         st.rerun()
     log = read_log()
     download.download_button(
@@ -107,14 +109,20 @@ def render_turn(turn: Turn, index: int) -> None:
     with st.container(key=f"msg-bot-{index}"):
         if turn.shown is None:
             # No AI answer passed: Wikipedia's own text, or "I don't know".
-            pill = ui.pill("Answer from Wikipedia", "info") if turn.wiki_answer else ui.pill("No reliable answer", "fail")
+            if turn.not_in_document:
+                pill = ui.pill(f"Not in {turn.document_name}", "warn")
+            elif turn.wiki_answer and not turn.document_name:
+                pill = ui.pill("Answer from Wikipedia", "info")
+            else:
+                pill = ui.pill("No reliable answer", "fail")
             st.html(ui.bubble_head(pill))
             st.markdown(ui.latex_for_streamlit(turn.reply))
             return
         model, text = turn.shown
         audit = shown_audit(turn)
         # Agreement is part of the analysis (panel), not of the one answer shown.
-        pills = [ui.pill(f"Fact-checked · {model}", "good")]
+        checked = f"Checked against {turn.document_name}" if turn.document_name else "Fact-checked"
+        pills = [ui.pill(f"{checked} · {model}", "good")]
         if turn.revisions and model == turn.primary.model:
             pills.append(ui.pill(f"Revised after audit · {len(turn.revisions)} of {MAX_REVISIONS}", "info"))
         if any(outcome.status == "unavailable" for outcome in audit.values()):
@@ -235,8 +243,9 @@ def render_issues(turn: Turn) -> None:
 
 
 def render_evidence(turn: Turn) -> None:
-    """The Wikipedia passages the check used."""
-    html = '<div class="mp-section">Evidence used for the check · Wikipedia</div>'
+    """The passages the check used: from Wikipedia, or from the attached PDF."""
+    source = turn.document_name or "Wikipedia"
+    html = f'<div class="mp-section">Evidence used for the check · {ui.escape(source)}</div>'
     if turn.search_query and turn.search_query != turn.question:
         html += f'<div class="mp-muted">Searched for: “{ui.escape(turn.search_query)}”</div>'
     if turn.evidence_error:
@@ -267,6 +276,12 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
     """Details for the latest answer, laid out like a report card."""
     with st.container(key="audit-panel"):
         st.html('<div class="mp-panel-title">Answer audit</div>')
+        if turn is not None and turn.not_in_document:
+            st.html(
+                f'<div class="mp-muted">No part of {ui.escape(turn.document_name)} matched this '
+                "question, so the models were not asked and there is nothing to audit.</div>"
+            )
+            return
         if turn is None or not turn.audit:
             st.html('<div class="mp-muted">The audit of the latest answer appears here.</div>')
             return
@@ -336,6 +351,41 @@ def run_graph(graph_input, first_label: str) -> str | None:
     return error
 
 
+# ------------------------------------------------------------- attached PDF
+
+
+def attach_document(file) -> bool:
+    """Read an attached PDF into the session. Shows a message and returns False if it fails."""
+    try:
+        with st.spinner(f"Reading {file.name}…"):
+            st.session_state.document = load_document(file.getvalue(), file.name)
+        return True
+    except DocumentError as error:
+        st.error(str(error))
+        return False
+
+
+def render_document_bar() -> None:
+    """The attached file's name above the input field, with a button to remove it."""
+    document = st.session_state.get("document")
+    if document is None:
+        return
+    with st.container(key="document-bar"):
+        name, remove = st.columns([12, 1], vertical_alignment="center")
+        name.markdown(f"📎 **{document.name}** · {document.pages} pages · answers come from this file")
+        if remove.button("✕", key="remove-document", help="Remove the file and use Wikipedia again"):
+            del st.session_state["document"]
+            st.rerun()
+
+
+def question_input(question: str) -> dict:
+    """The graph's input: with the attached PDF's matching parts, if a file is attached."""
+    document = st.session_state.get("document")
+    if document is None:
+        return new_question_input(question)
+    return new_question_input(question, document.name, find_passages(document, question))
+
+
 def main() -> None:
     settings = load_settings_or_stop()
     if "thread_id" not in st.session_state:
@@ -371,7 +421,21 @@ def main() -> None:
                 return
         st.rerun()
 
-    question = st.chat_input("Ask a question…")
+    with chat_column:
+        render_document_bar()
+    submitted = st.chat_input(
+        "Ask a question…",
+        accept_file=True,
+        file_type=["pdf"],
+        max_upload_size=MAX_BYTES // (1024 * 1024),  # in MB; documents.py checks again
+    )
+    question = submitted.text.strip() if submitted else ""
+    if submitted and submitted.files:
+        with chat_column:
+            if not attach_document(submitted.files[0]):
+                return
+        if not question:
+            st.rerun()  # only a file was sent: show it above the input field
     if question:
         if waiting:
             # A new question means "keep the previous answer": close that turn
@@ -382,7 +446,7 @@ def main() -> None:
                     return
         with chat_column:
             render_user_bubble(question, "pending")
-            error = run_graph(new_question_input(question), "Asking models…")
+            error = run_graph(question_input(question), "Asking models…")
             if error:
                 st.error(error)  # failed questions are not saved; just ask again
                 return
