@@ -272,3 +272,55 @@ def test_daily_limit_is_not_retried_and_explained():
     minute = api_error(openai.RateLimitError, 429)
     assert should_retry(minute) and not should_retry(daily)
     assert "Today's free limit" in friendly_error(daily, SPEC)
+
+
+# ------------------------------------------------------------ empty answers
+
+
+def fake_replies(monkeypatch, replies):
+    """ask_model returns these replies one after another; returns the call log."""
+    calls = []
+
+    def fake_ask_model(spec, messages, temperature=0.7):
+        calls.append(spec.name)
+        return replies[len(calls) - 1]
+
+    monkeypatch.setattr(answers, "ask_model", fake_ask_model)
+    return calls
+
+
+def test_empty_answer_is_asked_again(monkeypatch):
+    calls = fake_replies(monkeypatch, ["", "Ilia Chavchavadze wrote it."])
+    answer = answers._ask_safely(SPEC, [])
+    assert answer.ok and answer.text == "Ilia Chavchavadze wrote it."
+    assert len(calls) == 2
+
+
+def test_empty_answer_twice_is_a_failure_not_an_answer(monkeypatch):
+    calls = fake_replies(monkeypatch, ["", ""])
+    answer = answers._ask_safely(SPEC, [])
+    assert not answer.ok
+    assert answer.error == "'gemini-test' returned an empty answer."
+    assert len(calls) == 2  # not asked forever
+
+
+def test_normal_answer_is_asked_once(monkeypatch):
+    calls = fake_replies(monkeypatch, ["Canberra."])
+    assert answers._ask_safely(SPEC, []).text == "Canberra."
+    assert len(calls) == 1
+
+
+def test_empty_primary_answer_leaves_the_other_one(monkeypatch):
+    # PRIMARY fails with an empty answer: SECONDARY's answer is the one checked and shown.
+    def fake_ask_model(spec, messages, temperature=0.7):
+        return "" if spec is SPEC else "Ilia Chavchavadze."
+
+    monkeypatch.setattr(answers, "ask_model", fake_ask_model)
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    update = graph.generate_answers({"question": "Who wrote A Happy Nation?", "messages": [], "latency": {}})
+    assert not update["primary"].ok and update["secondary"].text == "Ilia Chavchavadze."
+    assert "error" not in update  # one answer is enough to go on
+    from graph import Turn
+
+    turn = Turn("Who wrote A Happy Nation?", update["primary"], update["secondary"])
+    assert turn.original_answer == "Ilia Chavchavadze."
