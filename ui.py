@@ -256,7 +256,7 @@ def empty_chat() -> str:
     return (
         f'<div class="mp-empty"><img class="mp-empty-logo" src="{_png_data_uri(LOGO_FILE)}" alt="VerdictAi">'
         '<div class="mp-empty-title">Ask anything</div>'
-        "<div>Ask in English, or attach a PDF with 📎 to get answers from your own document.</div>"
+        "<div>Ask in English, or attach a PDF to get answers from your own document.</div>"
         f'<div class="mp-features">{cards}</div></div>'
     )
 
