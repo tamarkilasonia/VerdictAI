@@ -173,6 +173,5 @@ def get_evidence(query: str, answer: str, user_agent: str) -> list[Passage]:
 
 
 ##cd /Users/tamarkilasonia/modelproof-py
-##source .venv/bin/activate
+#source .venv/bin/activate
 ##pytest -q
-##streamlit run app.py
