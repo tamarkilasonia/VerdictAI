@@ -136,6 +136,20 @@ CHECKS: dict[str, str] = {
 # For these checks a high score is good; for the others a high score is bad.
 HIGHER_IS_BETTER = {"intent_alignment"}
 
+# gpt-oss "thinks" before it answers. With reasoning_effort="low" it thought
+# ~94 tokens per audit instead of ~311 (and up to ~630 for long answers), so
+# an audit took 1.1 s instead of 1.5 s and used ~15% fewer tokens, with no
+# loss of quality: on 12 fixed cases it got 48/48 verdicts right (default
+# reasoning: 46/48), and on 3 harder cases x 3 runs both settings agreed.
+# Other models may not accept the setting, so it is sent to gpt-oss only.
+AUDITOR_REASONING_EFFORT = "low"
+
+
+def auditor_reasoning_effort(model_name: str) -> str | None:
+    """The reasoning effort to request for this auditor model, or None."""
+    return AUDITOR_REASONING_EFFORT if "gpt-oss" in model_name else None
+
+
 RETRY_MESSAGE = (
     "Your reply was not valid JSON in the required format. "
     "Reply again with ONLY the JSON object."
@@ -372,7 +386,9 @@ def run_check(check: str, user_input: str) -> CheckOutcome:
     spec = get_settings().auditor
     # temperature=0: the same answer should get the same score every time.
     # json_mode asks the service itself to return a JSON object.
-    model = get_chat_model(spec, temperature=0.0, json_mode=True)
+    model = get_chat_model(
+        spec, temperature=0.0, json_mode=True, reasoning_effort=auditor_reasoning_effort(spec.name)
+    )
     messages: list[BaseMessage] = [SystemMessage(CHECKS[check]), HumanMessage(user_input)]
     outcome = CheckOutcome(check)
     start = time.perf_counter()
@@ -408,7 +424,9 @@ def run_combined_audit(
     the quota. Then all four checks are reported as unavailable.
     """
     spec = get_settings().auditor
-    model = get_chat_model(spec, temperature=0.0, json_mode=True)
+    model = get_chat_model(
+        spec, temperature=0.0, json_mode=True, reasoning_effort=auditor_reasoning_effort(spec.name)
+    )
     messages = [
         SystemMessage(COMBINED_PROMPT),
         HumanMessage(build_combined_input(question, answer, conversation, evidence)),

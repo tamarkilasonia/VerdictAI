@@ -49,10 +49,18 @@ def should_retry(error: BaseException) -> bool:
     return isinstance(error, RETRYABLE_ERRORS) and not is_daily_limit(error)
 
 
-def get_chat_model(spec: ModelSpec, *, temperature: float = 0.7, json_mode: bool = False) -> Runnable:
+def get_chat_model(
+    spec: ModelSpec,
+    *,
+    temperature: float = 0.7,
+    json_mode: bool = False,
+    reasoning_effort: str | None = None,
+) -> Runnable:
     """Create a chat model from a ModelSpec (name + base URL + key from .env).
 
     json_mode: ask the service to reply with a JSON object (used by the auditor).
+    reasoning_effort: "low", "medium" or "high" for reasoning models such as
+    gpt-oss (used by the auditor); None leaves the service's default.
 
     The model is wrapped with LangChain's built-in retry, which waits a bit
     longer after each failure (exponential backoff with random jitter).
@@ -60,6 +68,8 @@ def get_chat_model(spec: ModelSpec, *, temperature: float = 0.7, json_mode: bool
     options: dict[str, Any] = {}
     if json_mode:
         options["model_kwargs"] = {"response_format": {"type": "json_object"}}
+    if reasoning_effort:
+        options["reasoning_effort"] = reasoning_effort
     model = init_chat_model(
         spec.name,
         model_provider="openai",  # the OpenAI *format*, not the OpenAI company
