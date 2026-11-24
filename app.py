@@ -5,6 +5,7 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 import streamlit as st
@@ -12,6 +13,7 @@ from langgraph.types import Command
 
 import ui
 from audit_log import read_log
+import factcheck
 from documents import MAX_BYTES, DocumentError, find_passages, load_document
 from auditor import CheckOutcome
 from config import MAX_REVISIONS, Settings, get_settings
@@ -52,6 +54,7 @@ def render_header() -> None:
     if new_chat.button("New conversation", icon=":material/add_comment:", width="stretch"):
         st.session_state.thread_id = uuid.uuid4().hex
         st.session_state.pop("document", None)  # a new conversation starts without a file
+        st.session_state.pop("document_hash", None)
         st.rerun()
     log = read_log()
     download.download_button(
@@ -131,6 +134,8 @@ def render_turn(turn: Turn, index: int) -> None:
         st.html(ui.bubble_head(*pills))
         st.markdown(ui.latex_for_streamlit(text))
         st.html(audit_strip(audit))
+        if turn.document_name:
+            render_fact_warnings(turn, text)
         if turn.agreement_error:
             st.caption(turn.agreement_error)
 
@@ -355,14 +360,99 @@ def run_graph(graph_input, first_label: str) -> str | None:
 
 
 def attach_document(file) -> bool:
-    """Read an attached PDF into the session. Shows a message and returns False if it fails."""
+    """Read an attached PDF into the session and fact-check it.
+
+    Shows a message and returns False if the file cannot be used. The fact
+    check runs only once per file: its result is kept in the session under
+    the file's SHA-256, so attaching the same file again reuses it.
+    """
+    data = file.getvalue()
     try:
         with st.spinner(f"Reading {file.name}…"):
-            st.session_state.document = load_document(file.getvalue(), file.name)
-        return True
+            st.session_state.document = load_document(data, file.name)
     except DocumentError as error:
         st.error(str(error))
         return False
+    digest = hashlib.sha256(data).hexdigest()
+    st.session_state.document_hash = digest
+    checks = st.session_state.setdefault("fact_checks", {})
+    if digest not in checks:
+        check = run_fact_check(st.session_state.document)
+        if not check.error:  # a failed check (e.g. rate limit) is tried again next time
+            checks[digest] = check
+        else:
+            st.session_state.fact_check_error = check.error
+    return True
+
+
+def run_fact_check(document) -> factcheck.FactCheck:
+    """Fact-check the document against Wikipedia, showing the progress."""
+    with st.status(f"Fact-checking {document.name} against Wikipedia…") as status:
+        bar = st.progress(0.0)
+
+        def progress(label: str, done: int, total: int) -> None:
+            text = f"{label} {done} / {total}" if total else label
+            status.update(label=text)
+            bar.progress(done / total if total else 0.0, text=text)
+
+        check = factcheck.fact_check(document, progress)
+        status.update(label="Fact check failed" if check.error else "Fact check done",
+                      state="error" if check.error else "complete")
+    return check
+
+
+def current_fact_check() -> factcheck.FactCheck | None:
+    """The fact check of the attached file, if it has one."""
+    return st.session_state.get("fact_checks", {}).get(st.session_state.get("document_hash"))
+
+
+def render_fact_check() -> None:
+    """The table of checked claims, under the attached file's name."""
+    if error := st.session_state.pop("fact_check_error", None):
+        st.warning(f"Fact check unavailable: {error} Attach the file again to retry.")
+    check = current_fact_check()
+    if check is None:
+        return
+    counts = " · ".join(
+        f"{check.count(status)} {label}" for status, label in factcheck.RESULT_LABELS.items()
+    )
+    checked = len(check.results)
+    of_total = f"{checked} of {check.total_claims} facts checked" if check.total_claims > checked else f"{checked} facts checked"
+    with st.expander(f"Fact check against Wikipedia: {counts} ({of_total})", expanded=True):
+        if not check.results:
+            st.caption("No factual claims were found in this document.")
+            return
+        st.dataframe(
+            [
+                {
+                    "Page": r.claim.page,
+                    "Claim": r.claim.text,
+                    "Result": factcheck.RESULT_LABELS[r.status],
+                    "Correct fact": r.correction or (r.note if r.status == factcheck.UNCHECKED else ""),
+                    "Source": r.source_url or None,
+                }
+                for r in check.results
+            ],
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Page": st.column_config.NumberColumn(width="small"),
+                "Claim": st.column_config.TextColumn(width="large"),
+                "Correct fact": st.column_config.TextColumn(width="large"),
+                "Source": st.column_config.LinkColumn(display_text=r"https?://[^/]+/wiki/(.*)"),
+            },
+        )
+        if check.total_claims > checked:
+            st.caption(f"Only the first {factcheck.MAX_CLAIMS} facts are checked.")
+
+
+def render_fact_warnings(turn: Turn, answer: str) -> None:
+    """Under a document answer: a warning for each wrong claim it repeats (no new AI call)."""
+    check = current_fact_check()
+    if check is None or check.document_name != turn.document_name:
+        return
+    for result in factcheck.warnings_for(answer, check, factcheck.pages_of(turn.evidence)):
+        st.warning(factcheck.warning_text(result), icon=":material/fact_check:")
 
 
 def render_document_bar() -> None:
@@ -375,7 +465,9 @@ def render_document_bar() -> None:
         name.markdown(f"📎 **{document.name}** · {document.pages} pages · answers come from this file")
         if remove.button("✕", key="remove-document", help="Remove the file and use Wikipedia again"):
             del st.session_state["document"]
+            st.session_state.pop("document_hash", None)  # the results stay cached for a re-attach
             st.rerun()
+    render_fact_check()
 
 
 def question_input(question: str) -> dict:
