@@ -6,10 +6,6 @@ A small two-stage RAG pipeline:
                embeddings are closest to the ANSWER (precise, local).
 We search with the question because it names the topic; we re-rank with the
 answer because the answer's claims are what the auditor must verify.
-For Georgian, the graph passes English translations of the question and the
-answer (English Wikipedia is far richer, and English-to-English ranking is more
-precise). If a translation fails, the multilingual embeddings can still compare
-English passages with the Georgian text, only less precisely.
 """
 
 from __future__ import annotations
@@ -22,7 +18,6 @@ import requests
 from agreement import cosine_similarity, embed
 
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
-GEORGIAN_WIKIPEDIA_API = "https://ka.wikipedia.org/w/api.php"  # only for showing sources
 SEARCH_PAGES = 3  # how many pages to fetch from Wikipedia search
 TOP_PASSAGES = 3  # how many passages to give the auditor
 SENTENCES_PER_PASSAGE = 3  # short passages keep the auditor's prompt small and focused
@@ -30,23 +25,11 @@ TIMEOUT_SECONDS = 10
 # Wikipedia search always returns *something*: for "hello how are you" it finds
 # songs called "Hello". Passages below this cosine score are dropped, because
 # judging an answer "against" unrelated text makes the auditor flag harmless
-# answers as hallucinations. Measured with the multilingual embedding model on
-# real Gemini answers: real evidence 0.72-0.84 (Georgian answers ranked through
-# their English translation; untranslated they scored only 0.52-0.61), English
-# small talk vs. songs < 0.35. A page whose title IS the greeting (the film
+# answers as hallucinations. Measured with the embedding model on real
+# answers: real evidence 0.72-0.84, small talk vs. songs < 0.35. A page whose title IS the greeting (the film
 # "Hello! How Are You?") still scores 0.44; the hallucination prompt handles
 # that case: a greeting makes no factual claim, so there is nothing to check.
 MIN_RELEVANCE = 0.35
-
-
-def is_georgian(text: str) -> bool:
-    """True if the text contains Georgian letters (Unicode block U+10A0-U+10FF).
-
-    Checking the alphabet is enough here: English questions never contain
-    Georgian letters, and a Georgian question with one English word in it
-    ("რა არის Python?") still counts as Georgian.
-    """
-    return any("Ⴀ" <= char <= "ჿ" for char in text)
 
 
 @dataclass
@@ -55,18 +38,10 @@ class Passage:
     url: str  # link shown in the UI
     text: str  # a few sentences from the page
     score: float = 0.0  # cosine similarity to the answer (set by rerank)
-    # Georgian pages with no English counterpart in the evidence: their English
-    # translation (set by the graph) is given to the auditor as evidence too.
-    only_in_georgian: bool = False
-    english_text: str = ""
 
 
-def search_wikipedia(
-    query: str, user_agent: str, api: str = WIKIPEDIA_API
-) -> list[tuple[str, str, str]]:
+def search_wikipedia(query: str, user_agent: str) -> list[tuple[str, str, str]]:
     """Return (title, url, intro text) for the top Wikipedia search results.
-
-    `api` chooses the Wikipedia: English by default, or GEORGIAN_WIKIPEDIA_API.
 
     One API call does both the search (generator=search) and fetches each
     page's plain-text introduction (prop=extracts). Raises on network errors.
@@ -87,7 +62,7 @@ def search_wikipedia(
     }
     # Wikimedia asks every client to identify itself with a descriptive User-Agent.
     response = requests.get(
-        api, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS
+        WIKIPEDIA_API, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS
     )
     response.raise_for_status()
     pages = response.json().get("query", {}).get("pages", [])
@@ -132,34 +107,8 @@ def rerank(
     return sorted(relevant, key=lambda passage: passage.score, reverse=True)[:top_k]
 
 
-def georgian_titles(english_titles: list[str], user_agent: str) -> list[str]:
-    """Titles of the Georgian versions of these English Wikipedia pages.
-
-    Uses the pages' language links (the "ქართული" link in Wikipedia's sidebar),
-    so the Georgian page is about exactly the same topic. Pages without a
-    Georgian version are skipped.
-    """
-    params = {
-        "action": "query",
-        "format": "json",
-        "formatversion": 2,
-        "titles": "|".join(english_titles),
-        "prop": "langlinks",
-        "lllang": "ka",
-        "redirects": 1,
-    }
-    response = requests.get(
-        WIKIPEDIA_API, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS
-    )
-    response.raise_for_status()
-    pages = response.json().get("query", {}).get("pages", [])
-    return [page["langlinks"][0]["title"] for page in pages if page.get("langlinks")]
-
-
-def _intros(
-    titles: list[str], user_agent: str, api: str = GEORGIAN_WIKIPEDIA_API
-) -> list[tuple[str, str, str]]:
-    """(title, url, intro) of these Wikipedia pages (Georgian by default)."""
+def _intros(titles: list[str], user_agent: str) -> list[tuple[str, str, str]]:
+    """(title, url, intro) of these Wikipedia pages."""
     params = {
         "action": "query",
         "format": "json",
@@ -171,39 +120,12 @@ def _intros(
         "exlimit": len(titles),
         "inprop": "url",
     }
-    response = requests.get(api, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS)
+    response = requests.get(
+        WIKIPEDIA_API, params=params, headers={"User-Agent": user_agent}, timeout=TIMEOUT_SECONDS
+    )
     response.raise_for_status()
     pages = response.json().get("query", {}).get("pages", [])
     return [(p["title"], p.get("fullurl", ""), p["extract"]) for p in pages if p.get("extract")]
-
-
-def get_georgian_sources(
-    english_titles: list[str], georgian_query: str, answer: str, user_agent: str
-) -> list[Passage]:
-    """Passages from Georgian Wikipedia, found in two ways:
-
-    1. the Georgian versions of the English evidence pages (Wikipedia's
-       language links, the "ქართული" link in the sidebar): the same topics,
-       so they are shown for reading but not checked again;
-    2. a direct search of Georgian Wikipedia, because Georgian topics (a
-       village such as Shrosha, a Georgian TV series) are often missing in
-       English. Pages found only this way are marked `only_in_georgian`; the
-       graph translates them so the auditor can use them as evidence.
-    Ranked against the (Georgian) answer; the same relevance filter applies.
-    """
-    linked = georgian_titles(sorted(set(english_titles)), user_agent) if english_titles else []
-    pages = _intros(linked, user_agent) if linked else []
-    seen = {title for title, _, _ in pages}
-    found = [page for page in search_wikipedia(georgian_query, user_agent, GEORGIAN_WIKIPEDIA_API)
-             if page[0] not in seen]
-    passages = [
-        Passage(title=title, url=url, text=chunk, only_in_georgian=title in {p[0] for p in found})
-        for title, url, intro in pages + found
-        for chunk in split_passages(intro)
-    ]
-    # Georgian passages vs. the Georgian answer: same language, so the
-    # multilingual embeddings compare them directly.
-    return rerank(answer, passages)
 
 
 def best_passage_for(question: str, passages: list[Passage]) -> Passage | None:
@@ -217,21 +139,20 @@ def best_passage_for(question: str, passages: list[Passage]) -> Passage | None:
     return best[0] if best else None
 
 
-def wikipedia_answer(
-    question: str, passages: list[Passage], user_agent: str, api: str = WIKIPEDIA_API
-) -> Passage | None:
+def wikipedia_answer(question: str, passages: list[Passage], user_agent: str) -> Passage | None:
     """Wikipedia's own answer to the question, shown when no AI answer passed.
 
     The page whose passage is closest to the question is chosen. Its first
-    sentences (the definition, e.g. "ვეფხისტყაოსანი — XII საუკუნის ქართველი
-    პოეტის, შოთა რუსთაველის ... პოემა") come first, because the single closest
+    sentences (the definition, e.g. "The Knight in the Panther's Skin is a
+    Georgian medieval epic poem, written in the 12th century by Shota
+    Rustaveli") come first, because the single closest
     passage is often on topic without containing the answer; that passage is
     added if it is a different one. The text is quoted, never rewritten.
     """
     best = best_passage_for(question, passages)
     if best is None:
         return None
-    intros = _intros([best.title], user_agent, api)
+    intros = _intros([best.title], user_agent)
     lead = split_passages(intros[0][2])[0] if intros else best.text
     text = lead if best.text == lead else f"{lead}\n\n…\n\n{best.text}"
     return replace(best, text=text)
@@ -240,8 +161,8 @@ def wikipedia_answer(
 def get_evidence(query: str, answer: str, user_agent: str) -> list[Passage]:
     """Search, split and re-rank. Returns [] if Wikipedia has nothing relevant.
 
-    query: what to search for (the question, in English).
-    answer: what the passages are ranked against (may be in any language).
+    query: what to search for (a few keywords from the question).
+    answer: what the passages are ranked against.
     """
     passages = [
         Passage(title=title, url=url, text=chunk)

@@ -190,7 +190,7 @@ def empty_chat() -> str:
         f'<div class="mp-empty">{logo(56)}'
         '<div class="mp-empty-title">Ask anything</div>'
         "<div>Two models answer, their agreement is measured, and an auditor checks "
-        "the answer against Wikipedia. Ask in English or Georgian.</div></div>"
+        "the answer against Wikipedia. Ask in English.</div></div>"
     )
 
 

@@ -136,32 +136,28 @@ def test_failing_answer_is_hidden_and_the_other_shown():
     assert turn.reply == "In 1989."
 
 
-def test_both_failing_gives_an_honest_dont_know_in_the_question_language():
-    english = Turn("When did the Berlin Wall fall?", ModelAnswer("p", text="1975."),
-                   ModelAnswer("s", text="1980."), audit=failing_audit(),
-                   secondary_audit=failing_audit())
-    georgian = Turn("როდის დაეცა ბერლინის კედელი?", ModelAnswer("p", text="1975."),
-                    ModelAnswer("s", text="1980."), audit=failing_audit(),
-                    secondary_audit=failing_audit())
-    assert english.shown is None
-    assert english.reply == (
+def test_both_failing_gives_an_honest_dont_know():
+    turn = Turn("When did the Berlin Wall fall?", ModelAnswer("p", text="1975."),
+                ModelAnswer("s", text="1980."), audit=failing_audit(),
+                secondary_audit=failing_audit())
+    assert turn.shown is None
+    assert turn.reply == (
         "The AI answers did not pass the fact check. So I don't know a reliable answer "
         "to this (see the analysis on the right)."
     )
-    assert georgian.shown is None and "სანდო პასუხი არ ვიცი" in georgian.reply
 
 
 def test_wikipedia_text_is_shown_when_no_ai_answer_passed():
-    wiki = Passage("ბედნიერი ერი", "https://ka.wikipedia.org/wiki/x",
-                   "სიმღერის ტექსტი შექმნილია ილია ჭავჭავაძის ამავე სახელწოდების ლექსის მიხედვით.")
-    turn = Turn("„ბედნიერი ერი“ ვინაა ავტორი?", ModelAnswer("p", text="აკაკი წერეთელი."),
-                ModelAnswer("s", text="არ ვიცი."), audit=failing_audit(),
+    wiki = Passage("A Happy Nation", "https://en.wikipedia.org/wiki/x",
+                   "The lyrics are based on the poem of the same name by Ilia Chavchavadze.")
+    turn = Turn("Who wrote A Happy Nation?", ModelAnswer("p", text="Akaki Tsereteli."),
+                ModelAnswer("s", text="I don't know."), audit=failing_audit(),
                 secondary_audit=failing_audit(), wiki_answer=wiki)
     assert turn.shown is None
     assert turn.reply == (
-        "AI-ების პასუხებმა ფაქტების შემოწმება ვერ გაიარა. აი, რა წერია Wikipedia-ში:\n\n"
-        "> სიმღერის ტექსტი შექმნილია ილია ჭავჭავაძის ამავე სახელწოდების ლექსის მიხედვით.\n\n"
-        "— [ბედნიერი ერი](https://ka.wikipedia.org/wiki/x)"
+        "The AI answers did not pass the fact check. Here is what Wikipedia says:\n\n"
+        "> The lyrics are based on the poem of the same name by Ilia Chavchavadze.\n\n"
+        "— [A Happy Nation](https://en.wikipedia.org/wiki/x)"
     )
 
 

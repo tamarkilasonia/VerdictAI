@@ -197,11 +197,6 @@ def render_answers(turn: Turn) -> None:
         with st.expander(label):
             st.markdown(ui.latex_for_streamlit(text))
             st.html(audit_strip(audit))
-            if model == turn.secondary.model and turn.secondary.english_text:
-                # Georgian question: SECONDARY answered in English (checked as is),
-                # PRIMARY translated it into Georgian for reading.
-                st.caption(f"{model} answered in English; Gemini translated it. Original:")
-                st.markdown(ui.latex_for_streamlit(turn.secondary.english_text))
     if turn.revisions:
         with st.expander(f"{turn.primary.model} · original answer, before revising"):
             st.markdown(ui.latex_for_streamlit(turn.original_answer))
@@ -240,33 +235,20 @@ def render_issues(turn: Turn) -> None:
 
 
 def render_evidence(turn: Turn) -> None:
-    """The Wikipedia passages: Georgian ones to read, English ones the check used."""
-    html = ""
-    if turn.georgian_sources:
-        html += '<div class="mp-section">წყაროები · ქართული Wikipedia</div>'
-        for p in turn.georgian_sources:
-            # Pages English Wikipedia lacks were translated and checked too.
-            title = f"{p.title} · შემოწმებაშიც" if p.english_text else p.title
-            html += ui.evidence_card(title, p.url, p.text, p.score, "გახსენი Wikipedia-ზე →")
-        html += (
-            '<div class="mp-muted">შემოწმება ძირითადად ინგლისურ Wikipedia-ს ეყრდნობა '
-            "(ქვემოთ), რადგან იქ მეტი ფაქტია. „შემოწმებაშიც“ ნიშნავს, რომ ეს ქართული "
-            "სტატია ინგლისურ Wikipedia-ში არ იყო, ამიტომ ითარგმნა და აუდიტორმაც "
-            "გამოიყენა.</div>"
-        )
-    html += '<div class="mp-section">Evidence used for the check · English Wikipedia</div>'
+    """The Wikipedia passages the check used."""
+    html = '<div class="mp-section">Evidence used for the check · Wikipedia</div>'
     if turn.search_query and turn.search_query != turn.question:
         html += f'<div class="mp-muted">Searched for: “{ui.escape(turn.search_query)}”</div>'
     if turn.evidence_error:
         html += f'<div class="mp-muted">{ui.escape(turn.evidence_error)}</div>'
     elif not turn.evidence:
-        html += '<div class="mp-muted">No relevant English passages found.</div>'
+        html += '<div class="mp-muted">No relevant passages found.</div>'
     else:
         # Relevance = cosine similarity to the answer (the re-ranking score).
         html += "".join(
             ui.evidence_card(p.title, p.url, p.text, p.score) for p in turn.evidence
         )
-    if not turn.evidence and not any(p.english_text for p in turn.georgian_sources):
+    if not turn.evidence:
         html += '<div class="mp-muted">Checked without evidence.</div>'
     st.html(html)
 
@@ -289,11 +271,6 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
             st.html('<div class="mp-muted">The audit of the latest answer appears here.</div>')
             return
 
-        if turn.answer_translation:
-            # The evidence was ranked against this translation, and the quotes
-            # in "Issues found" come from it.
-            with st.expander(f"{turn.primary.model} answer, as checked (English translation)"):
-                st.markdown(ui.latex_for_streamlit(turn.answer_translation))
         render_comparison(turn)
         render_answers(turn)
         render_issues(turn)
@@ -394,7 +371,7 @@ def main() -> None:
                 return
         st.rerun()
 
-    question = st.chat_input("Ask a question… · დასვით კითხვა…")
+    question = st.chat_input("Ask a question…")
     if question:
         if waiting:
             # A new question means "keep the previous answer": close that turn

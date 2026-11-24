@@ -12,12 +12,16 @@ from config import ModelSpec
 from models import friendly_error, get_chat_model, reply_text
 
 # Telling the model it is fine to say "I'm not sure" reduces made-up details,
-# which makes the later audit more meaningful. The language rule keeps English
-# questions in English and lets Georgian questions get Georgian answers.
+# which makes the later audit more meaningful. ModelProof works in English
+# only, so every answer is in English, whatever language the question uses.
+# A plain "Always answer in English" was not enough: Qwen still answered a
+# Georgian question in Georgian and a Russian one in Russian. Naming other
+# languages explicitly made both models answer in English.
 SYSTEM_PROMPT = (
     "You are a helpful and factual assistant. "
-    "Always answer in the same language as the user's last message "
-    "(for example English or Georgian). "
+    "Always answer in English, even when the user writes in another language "
+    "(for example Georgian or Russian): never reply in the user's language "
+    "unless it is English. "
     "Answer the user's question clearly and concisely, in a few sentences "
     "unless more detail is asked for. "
     "If you are not sure about a fact, say so instead of guessing. "
@@ -33,9 +37,6 @@ class ModelAnswer:
     text: str | None = None
     error: str | None = None
     seconds: float = 0.0
-    # SECONDARY on a Georgian question answers in English (see graph.py);
-    # then `text` is Gemini's Georgian translation and this is the original.
-    english_text: str = ""
 
     @property
     def ok(self) -> bool:
@@ -79,18 +80,15 @@ def ask_both(
     primary: ModelSpec,
     secondary: ModelSpec,
     messages: list[BaseMessage],
-    secondary_messages: list[BaseMessage] | None = None,
 ) -> tuple[ModelAnswer, ModelAnswer]:
     """Ask both models at the same time.
 
-    `secondary_messages` lets SECONDARY get a different version of the
-    conversation (the question in English, for Georgian questions).
     Each call mostly waits for the AI service, so two threads finish in
     roughly the time of the slower model instead of the sum of both.
     """
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(_ask_safely, primary, messages)
-        second = pool.submit(_ask_safely, secondary, secondary_messages or messages)
+        second = pool.submit(_ask_safely, secondary, messages)
         return first.result(), second.result()
 
 
@@ -102,7 +100,7 @@ REVISE_PROMPT = (
     "Rewrite the ANSWER so that it fixes every PROBLEM listed. "
     "Use the EVIDENCE for facts. If the evidence does not support a claim, "
     "remove it or say that you are not sure. Keep the parts that were correct. "
-    "Write in the same language as the QUESTION. "
+    "Write in English. "
     "Reply with the corrected answer only: no introduction, and do not mention the audit."
 )
 
@@ -133,54 +131,23 @@ def revise_answer(
 # Wikipedia's search needs every word to match, so a whole sentence finds
 # nothing or junk: "As far as I know, The Knight in the Panther's Skin was
 # written by Galaktion Tabidze." found no page, and "what is the capital of
-# Kutaisi" found a singer. PRIMARY turns the question into a few English
-# keywords instead (English Wikipedia is also far richer than Georgian).
-# For a Georgian question, Georgian Wikipedia is searched too (with Georgian
-# keywords): Georgian topics such as a village are often missing in English.
+# Kutaisi" found a singer. PRIMARY turns the question into a few keywords instead.
 SEARCH_QUERY_PROMPT = (
-    "Write a short {language} Wikipedia search query (1 to 5 words) for the topic "
+    "Write a short English Wikipedia search query (1 to 5 words) for the topic "
     "of the user's message: the name of the person, work, place or event it is about, "
     "as a Wikipedia article title would write it. Use ONLY names that appear in the "
     "message: never add a name it does not contain (for example, do not guess the "
     "author of a poem; search for the poem). Do not answer the message. Leave out "
-    "words like 'poem', 'author' or 'recipe'. Write the query in {language} only: an "
-    "English query uses English letters (translate or transliterate Georgian names). "
-    "Reply with the query only.\n"
-    "Examples: 'მე როგორც ვიცი ვეფხისტყაოსანი გალაკტიონმა დაწერა' -> in English: "
-    "The Knight in the Panther's Skin; in Georgian: ვეფხისტყაოსანი. "
-    "'„ბედნიერი ერი“ ვინ დაწერა?' -> in English: A Happy Nation; in Georgian: ბედნიერი ერი"
+    "words like 'poem', 'author' or 'recipe'. Reply with the query only.\n"
+    "Examples: 'As far as I know, The Knight in the Panther's Skin was written by "
+    "Galaktion Tabidze' -> The Knight in the Panther's Skin. "
+    "'Who wrote A Happy Nation?' -> A Happy Nation"
 )
 
 
-def make_search_query(spec: ModelSpec, question: str, language: str = "English") -> str:
-    """A few keywords for the Wikipedia search, in `language` (English or Georgian)."""
-    prompt = SEARCH_QUERY_PROMPT.format(language=language)
-    messages = [SystemMessage(prompt), HumanMessage(question)]
-    return _unquote(ask_model(spec, messages, temperature=0.0))
-
-
-# A Georgian answer is translated into English by PRIMARY (Gemini), which knows
-# Georgian well, because the auditor misreads Georgian (see graph.audit).
-TRANSLATE_PROMPT = (
-    "Translate the user's text into English. Keep every name, date and number "
-    "exactly as written. Reply with the English translation only."
-)
-
-
-def translate_to_english(spec: ModelSpec, text: str) -> str:
-    """English version of a (Georgian) text."""
-    return _translate(spec, text, "English")
-
-
-def translate_to_georgian(spec: ModelSpec, text: str) -> str:
-    """Georgian version of an English text (SECONDARY's answer, see graph.py)."""
-    return _translate(spec, text, "Georgian")
-
-
-def _translate(spec: ModelSpec, text: str, language: str) -> str:
-    prompt = TRANSLATE_PROMPT.replace("English", language)
-    messages = [SystemMessage(prompt), HumanMessage(text)]
-    # temperature 0: a translation should not be creative.
+def make_search_query(spec: ModelSpec, question: str) -> str:
+    """A few keywords for the Wikipedia search."""
+    messages = [SystemMessage(SEARCH_QUERY_PROMPT), HumanMessage(question)]
     return _unquote(ask_model(spec, messages, temperature=0.0))
 
 
