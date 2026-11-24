@@ -19,5 +19,8 @@ sentence-transformers>=3.0
 requests>=2.31
 python-dotenv>=1.0
 
+# Reading attached PDFs (pure Python, no other dependencies)
+pypdf>=6.0
+
 # Tests
 pytest>=8.0

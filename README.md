@@ -57,6 +57,20 @@ know, and you can ask for a **corrected answer** built from the evidence. It wor
    issues and the evidence; the new answer is audited again (at most 2 revisions).
 7. **Audit trail.** Every interaction is appended to `logs/audit_log.jsonl`
    (downloadable with the *Download log* button in the header).
+8. **Answers from your own PDF.** Click 📎 in the input field and attach one English,
+   text-based PDF (up to 50 pages, 10 MB). Its name appears above the field with ✕ to
+   remove it. While it is attached, the text is split into short chunks that remember
+   their page, and the 4 chunks closest to your question go to both models, which must
+   answer only from them and cite the page, e.g. *(report.pdf, page 4)*. The auditor
+   checks the answers against the same chunks instead of Wikipedia. If no chunk is
+   close to the question, the models are not asked and the chat says the document does
+   not cover it. Scanned PDFs, password-protected or broken files and files over the
+   limits get a clear message. The file stays only in the browser session's memory.
+   Tested on *Attention Is All You Need* (15 pages): "What BLEU score did the big
+   Transformer get…?" → 28.4 *(page 8)*, both answers passed; "Who won the 2018 FIFA
+   World Cup?" → not in the document, no model asked; "How much did it cost in dollars
+   to train the model?" (close to the topic, not in the paper) → both models said the
+   document does not contain it.
 
 ---
 
@@ -159,7 +173,7 @@ runs use the local copy.
 pytest -q
 ```
 
-110 small tests cover the pure functions: cosine similarity and the agreement threshold,
+133 small tests cover the pure functions: cosine similarity and the agreement threshold,
 parsing of the auditor's JSON (valid, fenced, invalid, out of range), verdict
 thresholds at their exact boundaries, the hallucination label rules, passage
 splitting, re-ranking and dropping off-topic evidence, the audit log (including "the
@@ -167,7 +181,7 @@ API key is never written"), the graph's routing decisions, the search keywords,
 English-only prompts, auditing both answers (once each, even after a revision), choosing
 the one answer to show (both pass, one fails, both fail and "I don't know", unchecked
 answers never shown), Wikipedia's own answer (with the reason shown), the combined audit
-and its fallback to separate checks, the low reasoning effort for gpt-oss, empty answers asked again, formulas rewritten for display, no revision or retry
+and its fallback to separate checks, the low reasoning effort for gpt-oss, empty answers asked again, formulas rewritten for display, attached PDFs (reading, page and size limits, scanned, broken and password-protected files, page-numbered chunks, search, "not in the document" without asking the models, no Wikipedia in document mode, the log fields), no revision or retry
 when the auditor's daily limit is used up, the two-service settings and the error messages (rate limit,
 wrong key, unknown model, busy service). They use fakes instead of real AI services
 and embeddings, so they need neither API keys nor internet.
@@ -184,6 +198,7 @@ models.py       Chat-model factory configured from .env (+ retry with backoff)
 answers.py      Answer and revision prompts; asks both models in parallel
 agreement.py    Embeddings + cosine similarity
 retrieval.py    Wikipedia search, passage splitting, re-ranking
+documents.py    Attached PDF: reading, page-numbered chunks, search, the prompt for the models
 auditor.py      The four checks: Pydantic schemas, prompts, parsing, verdicts
 audit_log.py    JSONL audit trail
 config.py       Settings loaded from .env
@@ -201,6 +216,7 @@ tests/          pytest tests
 | Conversation memory | Short-term memory, checkpointer, `thread_id`, history window | 3, 10 | `graph.py` (`MemorySaver`) |
 | Four-check audit | LLM-as-a-judge, structured outputs (Pydantic, JSON schema), retries, parallel checks | 2, 11 | `auditor.py` |
 | Grounded hallucination check | RAG: retrieval + re-ranking | 7–9 | `retrieval.py` |
+| Answers from an attached PDF | RAG over a user document: chunking, embeddings, similarity search, grounded prompt with citations | 5, 7–9 | `documents.py` |
 | Revise answer | Conditional routing, loops, human-in-the-loop `interrupt` | 10 | `graph.py`, `app.py` |
 | Audit trail | Logging | 4 | `audit_log.py` |
 | Workflow | LangGraph state graph | 10 | `graph.py` |
