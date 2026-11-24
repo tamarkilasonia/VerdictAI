@@ -75,7 +75,7 @@ def test_settings_repr_hides_the_api_keys():
 def test_placeholder_user_agent_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("PRIMARY_API_KEY", "k1")
     monkeypatch.setenv("SECONDARY_API_KEY", "k2")
-    monkeypatch.setenv("WIKI_USER_AGENT", "ModelProof (contact: <your contact>)")
+    monkeypatch.setenv("WIKI_USER_AGENT", "VerdictAi (contact: <your contact>)")
     config.get_settings.cache_clear()
     try:
         assert config.get_settings().wiki_user_agent == config.DEFAULT_USER_AGENT

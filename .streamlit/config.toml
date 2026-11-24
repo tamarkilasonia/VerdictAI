@@ -1,10 +1,12 @@
-# Streamlit look and behaviour for ModelProof.
+# Streamlit look and behaviour for VerdictAi.
+# The colours come from the logo: its dark violet background (#0D0121) and
+# the violet of the "V" and of "Ai" (#704BED).
 [theme]
-base = "light"
-primaryColor = "#3b6fe0"
-backgroundColor = "#f7f8fa"
-secondaryBackgroundColor = "#eef1f5"
-textColor = "#1c2333"
+base = "dark"
+primaryColor = "#7C5CFF"
+backgroundColor = "#0D0121"
+secondaryBackgroundColor = "#1A0F3D"
+textColor = "#ECE8FF"
 font = "sans serif"
 
 [client]
