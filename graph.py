@@ -1,4 +1,4 @@
-"""The ModelProof workflow as a LangGraph graph.
+"""The VerdictAi workflow as a LangGraph graph.
 
     START -> generate_answers -> compare -> retrieve_evidence -> audit
                   |                                               |

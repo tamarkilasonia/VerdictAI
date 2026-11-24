@@ -1,8 +1,10 @@
-# ModelProof (Python)
+<p align="center"><img src="assets/verdictai-logo.png" alt="VerdictAi" width="360"></p>
+
+# VerdictAi
 
 **A chat app that does not blindly trust one LLM.**
 
-ModelProof asks two language models the same question, audits **both** answers for
+VerdictAi asks two language models the same question, audits **both** answers for
 **hallucination, bias, toxicity and intent alignment** against **real Wikipedia
 evidence**, and shows you **one answer: the one that passed the check**. If neither
 passed, it shows **Wikipedia's own text** instead, or says honestly that it does not
@@ -165,7 +167,7 @@ runs use the local copy.
 | `SECONDARY_BASE_URL` | Groq's OpenAI-compatible URL | Where AI 2 is reached |
 | `AGREEMENT_THRESHOLD` | `0.80` | Cosine similarity at or above which the models "agree" |
 | `HISTORY_MESSAGES` | `6` | How many previous chat messages the models see |
-| `WIKI_USER_AGENT` | `ModelProof-py/0.1 (AI course project)` | Identifies the app to Wikipedia, as Wikimedia requires. Put your own contact here |
+| `WIKI_USER_AGENT` | `VerdictAi/0.1 (AI course project)` | Identifies the app to Wikipedia, as Wikimedia requires. Put your own contact here |
 
 ### Tests
 
@@ -192,7 +194,8 @@ and embeddings, so they need neither API keys nor internet.
 
 ```
 app.py          Streamlit UI only (chat, audit panel, header, review buttons)
-ui.py           Look and feel: CSS, line icons, small HTML pieces
+ui.py           Look and feel: dark violet theme, CSS, logo, line icons, small HTML pieces
+assets/         The VerdictAi logo (full, and the "V" mark used as the tab icon)
 graph.py        LangGraph state, nodes, routing, checkpointer
 models.py       Chat-model factory configured from .env (+ retry with backoff)
 answers.py      Answer and revision prompts; asks both models in parallel

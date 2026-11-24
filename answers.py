@@ -12,7 +12,7 @@ from config import ModelSpec
 from models import friendly_error, get_chat_model, reply_text
 
 # Telling the model it is fine to say "I'm not sure" reduces made-up details,
-# which makes the later audit more meaningful. ModelProof works in English
+# which makes the later audit more meaningful. VerdictAi works in English
 # only, so every answer is in English, whatever language the question uses.
 # A plain "Always answer in English" was not enough: Qwen still answered a
 # Georgian question in Georgian and a Russian one in Russian. Naming other
