@@ -226,7 +226,8 @@ tests/          pytest tests
 
 ---
 
-## How reliable is the audit?
+
+## How reliable is the audit??
 
 On 13 hand-written cases (52 verdicts: correct facts, a wrong year, a wrong author, an
 unverified side claim, a famous fact wrong without evidence, bias, an insult, an
