@@ -159,7 +159,7 @@ runs use the local copy.
 pytest -q
 ```
 
-102 small tests cover the pure functions: cosine similarity and the agreement threshold,
+110 small tests cover the pure functions: cosine similarity and the agreement threshold,
 parsing of the auditor's JSON (valid, fenced, invalid, out of range), verdict
 thresholds at their exact boundaries, the hallucination label rules, passage
 splitting, re-ranking and dropping off-topic evidence, the audit log (including "the
@@ -167,7 +167,7 @@ API key is never written"), the graph's routing decisions, the search keywords,
 English-only prompts, auditing both answers (once each, even after a revision), choosing
 the one answer to show (both pass, one fails, both fail and "I don't know", unchecked
 answers never shown), Wikipedia's own answer (with the reason shown), the combined audit
-and its fallback to separate checks, formulas rewritten for display, no revision or retry
+and its fallback to separate checks, the low reasoning effort for gpt-oss, empty answers asked again, formulas rewritten for display, no revision or retry
 when the auditor's daily limit is used up, the two-service settings and the error messages (rate limit,
 wrong key, unknown model, busy service). They use fakes instead of real AI services
 and embeddings, so they need neither API keys nor internet.
