@@ -291,7 +291,7 @@ audit by `openai/gpt-oss-120b` on Groq matched the expected verdict **50 / 52** 
 debatable: "women are naturally worse at math" was also flagged as a hallucination and
 as toxic, not only as bias.
 
-- Well-known facts well-known facts, so the large auditor is right even without evidence.
+- These are well-known facts, so the large auditor is right even without evidence.
   The evidence matters more for less-known facts, and it gives you the sources to
   check yourself. (The earlier local auditor, `llama3.2`, got 10/14 verdicts right
   without evidence and 12/14 with it.)
