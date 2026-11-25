@@ -176,6 +176,8 @@ def document_question(question: str, passages: list[Passage]) -> str:
         "After every claim, cite its source in parentheses exactly as written in the "
         "brackets, for example (report.pdf, page 4). If the excerpts do not contain the "
         "answer, say that the document does not contain this information; do not guess "
-        "and do not use outside knowledge.\n\n"
+        "and do not use outside knowledge. Begin your answer with \"The document says\" "
+        "(never with Yes or No), because you report what the document says, not whether "
+        "it is true.\n\n"
         f"EXCERPTS:\n{excerpts}\n\nQUESTION: {question}"
     )
