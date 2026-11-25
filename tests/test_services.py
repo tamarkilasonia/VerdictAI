@@ -53,10 +53,28 @@ def test_auditor_uses_the_second_service(env):
     assert settings.primary.api_key == "gemini-key"
 
 
-def test_missing_key_gives_a_helpful_message(env):
-    env.setenv("PRIMARY_API_KEY", " ")  # blank, like an unfilled .env line
-    with pytest.raises(ValueError, match="aistudio.google.com"):
+def test_missing_groq_key_gives_a_helpful_message(env):
+    env.setenv("SECONDARY_API_KEY", " ")  # blank, like an unfilled .env line
+    with pytest.raises(ValueError, match="console.groq.com"):
         config.get_settings()
+
+
+def test_one_groq_key_is_enough_by_default(monkeypatch):
+    # No .env and no PRIMARY_ settings: all three models run on Groq with one key.
+    monkeypatch.setattr(config, "load_dotenv", lambda: None)
+    for name in ("PRIMARY_API_KEY", "PRIMARY_MODEL", "PRIMARY_BASE_URL", "SECONDARY_MODEL",
+                 "AUDITOR_MODEL", "SECONDARY_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SECONDARY_API_KEY", "groq-key")
+    config.get_settings.cache_clear()
+    try:
+        s = config.get_settings()
+        assert (s.primary.name, s.secondary.name, s.auditor.name) == (
+            "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "openai/gpt-oss-120b")
+        assert s.primary.base_url == s.secondary.base_url == config.GROQ_BASE_URL
+        assert s.primary.api_key == s.secondary.api_key == "groq-key"
+    finally:
+        config.get_settings.cache_clear()
 
 
 # ------------------------------------------------------------ error messages

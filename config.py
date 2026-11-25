@@ -1,9 +1,12 @@
 """Settings for VerdictAi, read once from the .env file.
 
-VerdictAi uses two AI services (both free tiers, both reached through the
-OpenAI-compatible API format):
-  AI 1 - Google Gemini: the primary answer (and revisions)
-  AI 2 - Groq:          the second opinion and the auditor
+VerdictAi uses three models, all on Groq's free tier by default and reached
+through the OpenAI-compatible API format:
+  AI 1 - primary (openai/gpt-oss-20b): the main answer, revisions, search keywords
+  AI 2 - secondary (qwen/qwen3.8-27b): the second opinion
+         auditor (openai/gpt-oss-120b): the audit and the PDF fact check
+So one Groq key is enough. Any OpenAI-compatible service can be used for the
+primary model instead, e.g. Google Gemini (see .env.example).
 Everything that can differ between machines or providers (model names, URLs,
 keys, thresholds) lives in .env, so no other module hard-codes those values.
 """
@@ -93,15 +96,17 @@ def get_settings() -> Settings:
     """
     load_dotenv()  # silently does nothing if .env is missing
 
-    # AI 1: Gemini answers the question.
-    gemini_url = _text("PRIMARY_BASE_URL", GEMINI_BASE_URL)
-    gemini_key = _api_key("PRIMARY_API_KEY", "https://aistudio.google.com")
     # AI 2: Groq gives the second opinion and runs the audit.
     groq_url = _text("SECONDARY_BASE_URL", GROQ_BASE_URL)
     groq_key = _api_key("SECONDARY_API_KEY", "https://console.groq.com")
+    # AI 1: answers the question. On Groq by default (Gemini was often
+    # overloaded, "503", in November 2026), with the same key unless
+    # PRIMARY_API_KEY is set (e.g. for Gemini).
+    primary_url = _text("PRIMARY_BASE_URL", GROQ_BASE_URL)
+    primary_key = os.getenv("PRIMARY_API_KEY", "").strip() or groq_key
 
     settings = Settings(
-        primary=ModelSpec(_text("PRIMARY_MODEL", "gemini-3.1-flash-lite"), gemini_url, gemini_key),
+        primary=ModelSpec(_text("PRIMARY_MODEL", "openai/gpt-oss-20b"), primary_url, primary_key),
         secondary=ModelSpec(_text("SECONDARY_MODEL", "qwen/qwen3.8-27b"), groq_url, groq_key),
         auditor=ModelSpec(_text("AUDITOR_MODEL", "openai/gpt-oss-120b"), groq_url, groq_key),
         agreement_threshold=_number("AGREEMENT_THRESHOLD", 0.80, float),
