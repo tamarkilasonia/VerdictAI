@@ -2,6 +2,10 @@
 
 # VerdictAi
 
+[![tests](https://github.com/tamarkilasonia/VerdictAI/actions/workflows/tests.yml/badge.svg)](https://github.com/tamarkilasonia/VerdictAI/actions/workflows/tests.yml)
+
+**Try it online: [verdic-t-ai.streamlit.app](https://verdic-t-ai.streamlit.app)**
+
 **A chat app that does not blindly trust one LLM.**
 
 VerdictAi asks two language models the same question, audits **both** answers for
@@ -95,7 +99,12 @@ know, and you can ask for a **corrected answer** built from the evidence. It wor
    than 3,800 years", Wikipedia says "more than 3,700". The check of 20 claims used
    about 12,000 auditor tokens (~6% of the daily limit) and took 79 s, 60 s of it
    waiting for Groq's per-minute limit. There is no web search: what Wikipedia cannot
-   settle stays *can't be checked*.
+   settle stays *can't be checked*. Two more test files (2026-11-25): a science document
+   with 20 claims, 7 of them wrong, had all 7 caught, with 2 false alarms (Mendeleev 1869
+   and the ISS since November 2000, where the auditor followed a side article); a short
+   landmarks document with 8 claims, 3 of them wrong, got all 8 verdicts right, locally
+   and online. In total 15 of 16 wrong claims were caught, with 3 false alarms. The test
+   files, the list of their mistakes and the results are in [`eval/`](eval/README.md).
 
 ---
 
@@ -209,7 +218,30 @@ answers never shown), Wikipedia's own answer (with the reason shown), the combin
 and its fallback to separate checks, the low reasoning effort for gpt-oss, empty answers asked again, formulas rewritten for display, attached PDFs (reading, page and size limits, scanned, broken and password-protected files, page-numbered chunks, search, "not in the document" without asking the models, no Wikipedia in document mode, the log fields), the PDF fact check (claim extraction and cut-off replies, claims from every page, batches of 5, matching auditor issues to claims, confirmed / contradicted / can't be checked, waiting for the per-minute limit, warnings, the summary for "is this correct?"), no revision or retry
 when the auditor's daily limit is used up, the two-service settings and the error messages (rate limit,
 wrong key, unknown model, busy service). They use fakes instead of real AI services
-and embeddings, so they need neither API keys nor internet.
+and embeddings, so they need neither API keys nor internet, nor PyTorch. GitHub Actions
+runs them on every push and pull request (`.github/workflows/tests.yml`).
+
+---
+
+## Deployment
+
+**Online version: [https://verdic-t-ai.streamlit.app](https://verdic-t-ai.streamlit.app)**
+
+- Hosted on **Streamlit Community Cloud**, deployed from this GitHub repository (`main`,
+  `app.py`). Every push to `main` redeploys the app.
+- **Python 3.12**, with the packages in `requirements.txt`.
+- The API keys are not in the repository: they are stored in the app's **Secrets** on
+  Streamlit Cloud, which passes them to the app as environment variables (read the same
+  way as `.env`). The secrets used are `PRIMARY_API_KEY`, `PRIMARY_MODEL`,
+  `PRIMARY_BASE_URL`, `SECONDARY_API_KEY`, `SECONDARY_MODEL`, `AUDITOR_MODEL`,
+  `SECONDARY_BASE_URL` and `WIKI_USER_AGENT`.
+- The online version runs **entirely on Groq**: `PRIMARY_MODEL=openai/gpt-oss-20b`,
+  `PRIMARY_BASE_URL=https://api.groq.com/openai/v1` (second opinion
+  `qwen/qwen3.8-27b`, auditor `openai/gpt-oss-120b`).
+- When nobody has used it for a while, the app goes to sleep; the first visit after that
+  wakes it up, which takes a minute or so (it also loads the embedding model).
+- The online version shares the free Groq limits described under
+  [Known limitations](#known-limitations).
 
 ---
 
@@ -230,6 +262,7 @@ auditor.py      The four checks: Pydantic schemas, prompts, parsing, verdicts
 audit_log.py    JSONL audit trail
 config.py       Settings loaded from .env
 tests/          pytest tests
+eval/           Test PDFs with known mistakes, and the fact-check results
 ```
 
 ---
@@ -261,7 +294,7 @@ audit by `openai/gpt-oss-120b` on Groq matched the expected verdict **50 / 52** 
 debatable: "women are naturally worse at math" was also flagged as a hallucination and
 as toxic, not only as bias.
 
-- Well-known facts well-known facts, so the large auditor is right even without evidence.
+- These are well-known facts, so the large auditor is right even without evidence.
   The evidence matters more for less-known facts, and it gives you the sources to
   check yourself. (The earlier local auditor, `llama3.2`, got 10/14 verdicts right
   without evidence and 12/14 with it.)
@@ -315,3 +348,28 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
   (databases are out of scope for this project).
 - **Speed.** Depends on the services' load; free tiers may also slow down or pause
   requests when the per-minute limit is reached.
+
+---
+
+## Future work
+
+- **Caching results.** Keep the answers, Wikipedia passages and audits of questions that
+  were already asked (and fact checks of files already seen) in a cache, so a repeated
+  question costs no AI request and stays within Groq's free limits.
+- **A per-user limit in the public app.** The online version shares one Groq key, so one
+  visitor can use up the daily limit for everyone. A small limit per session (for example
+  a number of questions and fact checks per hour) would keep the app usable for all.
+- **Georgian support again.** The app answered in Georgian earlier but was made
+  English-only, because the free models wrote poor Georgian and Georgian Wikipedia is much
+  smaller. Stronger multilingual models would make it worth bringing back.
+- **Sources beyond Wikipedia.** Wikipedia's introductions do not cover recent events,
+  niche topics or exact details (e.g. Columbus's 1498 voyage). Other trusted sources, such
+  as encyclopedias, news archives or a web search used only when Wikipedia is silent,
+  would leave fewer claims "can't be checked".
+- **Preferring the main article.** Two false alarms came from side articles (*Types of
+  periodic tables* instead of *Periodic table*, *Space station* instead of *International
+  Space Station*). Ranking the article whose title matches the claim's topic above related
+  articles would avoid this.
+- **Memory in a database.** Conversations and fact checks live in RAM and disappear when
+  the server restarts. LangGraph's SQLite or Postgres checkpointer would keep them, and
+  would let several app instances share them.

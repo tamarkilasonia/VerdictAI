@@ -1,26 +1,32 @@
 # Install with:  pip install -r requirements.txt   (inside the .venv)
+# Versions are pinned to the ones the project was tested with (Python 3.12).
+# Only direct dependencies are listed; pip installs what they need.
 
 # UI
-streamlit>=1.40
+streamlit==1.67.0
 
 # LLM workflow and model clients
-langchain>=1.0
-langchain-openai>=1.0     # OpenAI-compatible client: reaches both Gemini and Groq
-langgraph>=1.0
+langchain==1.5.2
+langchain-core==1.8.4
+langchain-openai==1.8.5    # OpenAI-compatible client: reaches Groq (and Gemini)
+langgraph==1.2.23
+openai==3.57.0             # its error classes are used for retries and messages
 
 # Structured outputs
-pydantic>=2.7
+pydantic==2.14.4
 
 # Local, free, multilingual embeddings (paraphrase-multilingual-MiniLM-L12-v2).
 # Also installs PyTorch.
-sentence-transformers>=3.0
+sentence-transformers==6.3.0
+numpy==2.5.5
 
 # Wikipedia API and .env loading
-requests>=2.31
-python-dotenv>=1.0
+requests==2.34.2
+python-dotenv==1.2.4
 
 # Reading attached PDFs (pure Python, no other dependencies)
-pypdf>=6.0
+pypdf==7.1.1
 
 # Tests
-pytest>=8.0
+pytest==9.2.0
+httpx==0.28.1              # builds fake service errors in the tests
