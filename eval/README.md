@@ -1,7 +1,7 @@
 # Evaluation documents for the PDF fact check
 
 Three short English PDFs with known mistakes, used to test the fact check that runs when a
-file is attached (see item 9 in the [main README](../README.md)). Each file mixes correct
+file is attached (see step 9 in [How VerdictAi works](../docs/how-it-works.md)). Each file mixes correct
 claims with wrong ones. Some correct claims are "tricky": they sound wrong or depend on a
 detail, so they test for false alarms.
 
@@ -10,10 +10,10 @@ in the prompts.
 
 ## How to reproduce
 
-1. Run the app (`streamlit run app.py`) or open the [online version](https://verdic-t-ai.streamlit.app).
-2. Attach one of the PDFs with the attach button in the input field.
+1. Run the app (`streamlit run app.py`) or open the [online version](https://verdic-t-ai.streamlit.app)
+2. Attach one of the PDFs with the attach button in the input field
 3. Wait for the fact check to finish and compare the table under the file name with the
-   lists below. Asking *"Is this information correct?"* shows the same result as a summary.
+   lists below. Asking *"Is this information correct?"* shows the same result as a summary
 
 One check uses about 12,000 tokens of the auditor's free daily limit on Groq for 20 claims
 (~6%), so run the files one after another, not repeatedly.
