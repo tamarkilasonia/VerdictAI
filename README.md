@@ -97,7 +97,12 @@ know, and you can ask for a **corrected answer** built from the evidence. It wor
    than 3,800 years", Wikipedia says "more than 3,700". The check of 20 claims used
    about 12,000 auditor tokens (~6% of the daily limit) and took 79 s, 60 s of it
    waiting for Groq's per-minute limit. There is no web search: what Wikipedia cannot
-   settle stays *can't be checked*.
+   settle stays *can't be checked*. Two more test files (2026-11-25): a science document
+   with 20 claims, 7 of them wrong, had all 7 caught, with 2 false alarms (Mendeleev 1869
+   and the ISS since November 2000, where the auditor followed a side article); a short
+   landmarks document with 8 claims, 3 of them wrong, got all 8 verdicts right, locally
+   and online. In total 15 of 16 wrong claims were caught, with 3 false alarms. The test
+   files, the list of their mistakes and the results are in [`eval/`](eval/README.md).
 
 ---
 
@@ -254,6 +259,7 @@ auditor.py      The four checks: Pydantic schemas, prompts, parsing, verdicts
 audit_log.py    JSONL audit trail
 config.py       Settings loaded from .env
 tests/          pytest tests
+eval/           Test PDFs with known mistakes, and the fact-check results
 ```
 
 ---
