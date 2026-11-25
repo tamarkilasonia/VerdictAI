@@ -72,7 +72,30 @@ know, and you can ask for a **corrected answer** built from the evidence. It wor
    Transformer get…?" → 28.4 *(page 8)*, both answers passed; "Who won the 2018 FIFA
    World Cup?" → not in the document, no model asked; "How much did it cost in dollars
    to train the model?" (close to the topic, not in the paper) → both models said the
-   document does not contain it.
+   document does not contain it. Answers about the document begin with *"The document
+   says…"*, so they are not read as a confirmation that the fact is true.
+9. **Fact check of the attached PDF.** Right after a file is attached, its factual claims
+   are checked against Wikipedia, with a progress bar (*Checking facts… 7 / 16*). The
+   primary model lists the claims (one per sentence, with its page); up to 20 are
+   checked, taken from all pages. Each claim gets its own Wikipedia passages, and the
+   existing auditor checks 5 claims per request to save Groq's limit. The result is a
+   table under the file name: page, claim, ✅ confirmed / ❌ contradicted / ⚠️ can't be
+   checked, the correct fact and the source. *Can't be checked* (Wikipedia neither
+   confirms nor denies it) is kept apart from *contradicted*. Results are kept for the
+   session, so attaching the same file again does not repeat the check. If an answer
+   repeats a wrong claim, a warning with the correct fact and the source appears under
+   it (found with the local embedding model, no new AI call), e.g. *The document says
+   "…in 34 BC", but this is wrong: … 15 March 44 BC (source: Assassination of Julius
+   Caesar)*. Asking *"Is this information correct?"* or *"Check this file"* shows the
+   fact check's summary instead of searching the text. Tested on a 3-page history
+   document with 16 events, 6 of them wrong: 5 of the 6 were caught (Caesar, Magna Carta,
+   Bastille, Aldrin, Berlin Wall); Columbus "1498" passed, because Wikipedia's
+   introduction only says his voyages took place in 1492–1504. One correct claim was
+   flagged: the document says the Great Pyramid was the tallest structure "for more
+   than 3,800 years", Wikipedia says "more than 3,700". The check of 20 claims used
+   about 12,000 auditor tokens (~6% of the daily limit) and took 79 s, 60 s of it
+   waiting for Groq's per-minute limit. There is no web search: what Wikipedia cannot
+   settle stays *can't be checked*.
 
 ---
 
@@ -175,7 +198,7 @@ runs use the local copy.
 pytest -q
 ```
 
-133 small tests cover the pure functions: cosine similarity and the agreement threshold,
+167 small tests cover the pure functions: cosine similarity and the agreement threshold,
 parsing of the auditor's JSON (valid, fenced, invalid, out of range), verdict
 thresholds at their exact boundaries, the hallucination label rules, passage
 splitting, re-ranking and dropping off-topic evidence, the audit log (including "the
@@ -183,7 +206,7 @@ API key is never written"), the graph's routing decisions, the search keywords,
 English-only prompts, auditing both answers (once each, even after a revision), choosing
 the one answer to show (both pass, one fails, both fail and "I don't know", unchecked
 answers never shown), Wikipedia's own answer (with the reason shown), the combined audit
-and its fallback to separate checks, the low reasoning effort for gpt-oss, empty answers asked again, formulas rewritten for display, attached PDFs (reading, page and size limits, scanned, broken and password-protected files, page-numbered chunks, search, "not in the document" without asking the models, no Wikipedia in document mode, the log fields), no revision or retry
+and its fallback to separate checks, the low reasoning effort for gpt-oss, empty answers asked again, formulas rewritten for display, attached PDFs (reading, page and size limits, scanned, broken and password-protected files, page-numbered chunks, search, "not in the document" without asking the models, no Wikipedia in document mode, the log fields), the PDF fact check (claim extraction and cut-off replies, claims from every page, batches of 5, matching auditor issues to claims, confirmed / contradicted / can't be checked, waiting for the per-minute limit, warnings, the summary for "is this correct?"), no revision or retry
 when the auditor's daily limit is used up, the two-service settings and the error messages (rate limit,
 wrong key, unknown model, busy service). They use fakes instead of real AI services
 and embeddings, so they need neither API keys nor internet.
@@ -202,6 +225,7 @@ answers.py      Answer and revision prompts; asks both models in parallel
 agreement.py    Embeddings + cosine similarity
 retrieval.py    Wikipedia search, passage splitting, re-ranking
 documents.py    Attached PDF: reading, page-numbered chunks, search, the prompt for the models
+factcheck.py    Fact check of an attached PDF against Wikipedia: claims, batched audit, warnings, summary
 auditor.py      The four checks: Pydantic schemas, prompts, parsing, verdicts
 audit_log.py    JSONL audit trail
 config.py       Settings loaded from .env
@@ -220,6 +244,7 @@ tests/          pytest tests
 | Four-check audit | LLM-as-a-judge, structured outputs (Pydantic, JSON schema), retries, parallel checks | 2, 11 | `auditor.py` |
 | Grounded hallucination check | RAG: retrieval + re-ranking | 7–9 | `retrieval.py` |
 | Answers from an attached PDF | RAG over a user document: chunking, embeddings, similarity search, grounded prompt with citations | 5, 7–9 | `documents.py` |
+| Fact check of the PDF | Claim extraction, LLM-as-a-judge in batches, rate-limit handling, semantic matching with embeddings | 2, 5, 7–9, 11 | `factcheck.py` |
 | Revise answer | Conditional routing, loops, human-in-the-loop `interrupt` | 10 | `graph.py`, `app.py` |
 | Audit trail | Logging | 4 | `audit_log.py` |
 | Workflow | LangGraph state graph | 10 | `graph.py` |
