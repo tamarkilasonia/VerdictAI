@@ -76,6 +76,8 @@ def build_entry(turn: Turn, settings: Settings, thread_id: str = "") -> dict[str
         "document": turn.document_name or None,
         "document_sources": [p.title for p in turn.evidence] if turn.document_name else None,
         "not_in_document": turn.not_in_document or None,
+        # True when the reply was the fact check's summary (no AI answer).
+        "fact_check_summary": bool(turn.fixed_reply) or None,
         "audit_scores": _scores(turn.audit),
         "secondary_audit_scores": _scores(turn.secondary_audit) or None,
         "original_audit_scores": _scores(turn.original_audit) if turn.revisions else None,

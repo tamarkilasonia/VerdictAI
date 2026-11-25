@@ -28,7 +28,9 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from functools import lru_cache
 
+import numpy as np
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agreement import cosine_similarity, embed
@@ -360,3 +362,77 @@ def pages_of(passages: list[Passage]) -> set[int]:
         if match:
             pages.add(int(match.group(1)))
     return pages
+
+
+# ------------------------------------------------- "is this document correct?"
+
+# Questions about the whole document's accuracy ("is this information
+# correct?") are answered with the fact check's summary instead of searching
+# the document for an answer (which found nothing and said "Not in file").
+# They are recognised by meaning, with the local embedding model: measured on
+# 20 questions, such requests scored 0.67-1.00 against these examples, and
+# ordinary questions about the document at most 0.54 (a question about one
+# fact, "Was Julius Caesar assassinated in 34 BC?", scored 0.21).
+CHECK_REQUEST_EXAMPLES = [
+    "Is this information correct?",
+    "Is this document accurate?",
+    "Check this file.",
+    "Fact-check this document.",
+    "Are there any mistakes in this document?",
+    "Are there any errors or wrong dates in this file?",
+    "Is everything in this file true?",
+    "Verify the facts in this PDF.",
+    "How reliable is this document?",
+    "Which facts in the file are wrong?",
+]
+CHECK_REQUEST_SIMILARITY = 0.62
+
+
+@lru_cache(maxsize=1)
+def _check_request_vectors() -> np.ndarray:
+    vectors = embed(CHECK_REQUEST_EXAMPLES)
+    return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+
+
+def asks_to_check_document(question: str) -> bool:
+    """True if the question asks whether the whole document is correct."""
+    vector = embed([question])[0]
+    vector = vector / (np.linalg.norm(vector) or 1)
+    return float((_check_request_vectors() @ vector).max()) >= CHECK_REQUEST_SIMILARITY
+
+
+def summary_reply(check: FactCheck | None, document_name: str) -> str:
+    """The chat reply for "is this document correct?": the fact check in short.
+
+    Lists every contradicted claim with what Wikipedia says instead, and
+    points to the full table under the file name.
+    """
+    if check is None:
+        return (
+            f"The fact check of {document_name} is not available (it may have failed "
+            "because of the service's limit). Attach the file again to run it."
+        )
+    checked = len(check.results)
+    if not checked:
+        return f"I found no factual claims to check in {document_name}."
+    scope = f"{checked} of {check.total_claims}" if check.total_claims > checked else f"all {checked}"
+    lines = [
+        f"I checked {scope} factual claims in **{document_name}** against Wikipedia: "
+        f"**{check.count(CONFIRMED)} ✅ confirmed**, **{check.count(CONTRADICTED)} ❌ contradicted**, "
+        f"**{check.count(UNCHECKED)} ⚠️ can't be checked**."
+    ]
+    wrong = [r for r in check.results if r.status == CONTRADICTED]
+    if wrong:
+        lines.append("\n**These claims are wrong:**")
+        for r in wrong:
+            source = f" ([{r.source_title}]({r.source_url}))" if r.source_url else ""
+            lines.append(f'- **Page {r.claim.page}:** "{r.claim.text}" → {r.correction}{source}')
+    else:
+        lines.append("\nNo claim was contradicted by Wikipedia.")
+    if check.count(UNCHECKED):
+        lines.append(
+            "\n⚠️ *Can't be checked* means Wikipedia neither confirms nor denies the claim; "
+            "it is not the same as wrong."
+        )
+    lines.append("\nThe full table with every claim, its page and its source is under the file name, above the input field.")
+    return "\n".join(lines)

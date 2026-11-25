@@ -311,3 +311,74 @@ def test_daily_limit_is_not_waited_for(monkeypatch):
     monkeypatch.setattr(factcheck.time, "sleep", waits.append)
     check = factcheck.fact_check(Document("d.pdf", 1, [], np.zeros((0, 2))))
     assert waits == [] and check.results[0].status == UNCHECKED
+
+
+# ------------------------------------------- "is this document correct?" summary
+
+import graph  # noqa: E402
+from answers import ModelAnswer  # noqa: E402
+from audit_log import build_entry  # noqa: E402
+
+UNSURE = ClaimResult(Claim(2, "Columbus reached the Americas in 1498.", "Columbus"), UNCHECKED, note="x")
+FULL = FactCheck("w.pdf", total_claims=3, results=[WRONG, RIGHT, UNSURE])
+
+
+def test_summary_counts_lists_the_wrong_claims_and_points_to_the_table():
+    text = factcheck.summary_reply(FULL, "w.pdf")
+    assert text.startswith("I checked all 3 factual claims in **w.pdf** against Wikipedia: "
+                           "**1 ✅ confirmed**, **1 ❌ contradicted**, **1 ⚠️ can't be checked**.")
+    assert ('- **Page 1:** "Julius Caesar was assassinated in 34 BC." → the evidence says he was '
+            "assassinated on 15 March 44 BC. ([Assassination of Julius Caesar]"
+            "(https://en.wikipedia.org/wiki/Assassination_of_Julius_Caesar))") in text
+    assert "it is not the same as wrong" in text  # can't be checked != contradicted
+    assert "table" in text and "above the input field" in text
+
+
+def test_summary_says_when_only_some_claims_were_checked():
+    text = factcheck.summary_reply(FactCheck("w.pdf", total_claims=34, results=[RIGHT]), "w.pdf")
+    assert "I checked 1 of 34 factual claims" in text
+    assert "No claim was contradicted by Wikipedia." in text
+
+
+def test_summary_without_a_fact_check_or_without_claims():
+    assert "not available" in factcheck.summary_reply(None, "w.pdf")
+    assert factcheck.summary_reply(FactCheck("w.pdf"), "w.pdf") == "I found no factual claims to check in w.pdf."
+
+
+def test_document_check_questions_are_recognised(monkeypatch):
+    # A fake embedding: questions about the whole document's accuracy point one way.
+    def embed(texts):
+        words = ("correct", "check", "accurate", "mistakes", "errors", "true", "verify", "reliable", "wrong", "caesar")
+        return np.array([[t.lower().count(w) for w in words] + [1e-6] for t in texts], dtype=float)
+
+    monkeypatch.setattr(factcheck, "embed", embed)
+    factcheck._check_request_vectors.cache_clear()
+    try:
+        assert factcheck.asks_to_check_document("Is this information correct?")
+        assert factcheck.asks_to_check_document("check this file")
+        assert not factcheck.asks_to_check_document("Who was Caesar?")
+    finally:
+        factcheck._check_request_vectors.cache_clear()
+
+
+def test_prepared_reply_skips_the_models_and_the_audit(monkeypatch):
+    def no_models(*args):
+        raise AssertionError("the models must not be asked")
+
+    monkeypatch.setattr(graph, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr(graph, "ask_both", no_models)
+    summary = factcheck.summary_reply(FULL, "w.pdf")
+    state = {**graph.new_question_input("Is this information correct?", "w.pdf", fixed_reply=summary), "messages": []}
+    update = graph.generate_answers(state)
+    assert "not_in_document" not in update  # no "Not in file"
+    assert graph.route_after_answers({**state, **update}) == "finalize"
+    turn = graph.turn_from_state({**state, **update})
+    assert turn.reply == summary
+    assert build_entry(turn, SETTINGS)["fact_check_summary"] is True
+
+
+def test_without_a_prepared_reply_nothing_changes():
+    state = graph.new_question_input("Who was Caesar?", "w.pdf", [Passage("w.pdf, page 1", "", "t")])
+    assert state["fixed_reply"] == ""
+    turn = graph.Turn("Q?", ModelAnswer("p", text="A."), ModelAnswer("s", error="e"))
+    assert build_entry(turn, SETTINGS)["fact_check_summary"] is None

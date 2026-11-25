@@ -95,6 +95,9 @@ class Turn:
     # the question, so the models were not asked. "" = no document: Wikipedia.
     document_name: str = ""
     not_in_document: bool = False
+    # A reply prepared without the models (the fact check's summary for "is
+    # this document correct?"); then nothing is generated or audited.
+    fixed_reply: str = ""
 
     @property
     def original_answer(self) -> str:
@@ -144,6 +147,8 @@ class Turn:
         """What the user sees and the models remember: the AI answer that
         passed, else Wikipedia's text, else "I don't know". With a document:
         the answer that passed, else "the document does not answer this"."""
+        if self.fixed_reply:
+            return self.fixed_reply
         if self.not_in_document:
             return NOT_FOUND.format(name=self.document_name)
         if self.shown:
@@ -192,19 +197,25 @@ class ChatState(TypedDict, total=False):
     document_name: str  # attached PDF, "" if none
     document_passages: list[Passage]  # its parts closest to the question
     not_in_document: bool
+    fixed_reply: str  # prepared reply: skip the models and the audit
 
 
 def new_question_input(
-    question: str, document_name: str = "", document_passages: list[Passage] | None = None
+    question: str,
+    document_name: str = "",
+    document_passages: list[Passage] | None = None,
+    fixed_reply: str = "",
 ) -> dict[str, Any]:
     """Input for one graph run: the new question, with last question's fields cleared.
 
     With an attached PDF, `document_passages` are its parts closest to the
     question (documents.find_passages): the models answer from them and the
-    auditor checks against them instead of Wikipedia.
+    auditor checks against them instead of Wikipedia. `fixed_reply` is shown
+    as it is, without asking the models (e.g. the fact check's summary).
     """
     return {
         "question": question,
+        "fixed_reply": fixed_reply,
         "document_name": document_name,
         "document_passages": document_passages or [],
         "not_in_document": False,
@@ -248,6 +259,7 @@ def turn_from_state(state: ChatState) -> Turn:
         latency=state.get("latency", {}),
         document_name=state.get("document_name", ""),
         not_in_document=state.get("not_in_document", False),
+        fixed_reply=state.get("fixed_reply", ""),
     )
 
 
@@ -301,6 +313,12 @@ def generate_answers(state: ChatState) -> dict:
     no part matched, they are not asked at all (route_after_answers).
     """
     settings = get_settings()
+    if state.get("fixed_reply"):
+        skipped = "Not asked: a prepared reply (the fact check's summary) was shown."
+        return {
+            "primary": ModelAnswer(settings.primary.name, error=skipped),
+            "secondary": ModelAnswer(settings.secondary.name, error=skipped),
+        }
     passages = state.get("document_passages", [])
     if state.get("document_name") and not passages:
         skipped = f"Not asked: no part of {state['document_name']} matched the question."
@@ -462,7 +480,7 @@ def finalize(state: ChatState) -> dict:
 
 def route_after_answers(state: ChatState) -> str:
     """Stop early if no model answered; skip to the end if the document had nothing."""
-    if state.get("not_in_document"):
+    if state.get("not_in_document") or state.get("fixed_reply"):
         return "finalize"
     return END if state.get("error") else "compare"
 

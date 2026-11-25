@@ -112,7 +112,9 @@ def render_turn(turn: Turn, index: int) -> None:
     with st.container(key=f"msg-bot-{index}"):
         if turn.shown is None:
             # No AI answer passed: Wikipedia's own text, or "I don't know".
-            if turn.not_in_document:
+            if turn.fixed_reply:
+                pill = ui.pill(f"Fact check of {turn.document_name} · Wikipedia", "info")
+            elif turn.not_in_document:
                 pill = ui.pill(f"Not in {turn.document_name}", "warn")
             elif turn.wiki_answer and not turn.document_name:
                 pill = ui.pill("Answer from Wikipedia", "info")
@@ -281,6 +283,13 @@ def render_audit_panel(turn: Turn | None, settings: Settings) -> None:
     """Details for the latest answer, laid out like a report card."""
     with st.container(key="audit-panel"):
         st.html('<div class="mp-panel-title">Answer audit</div>')
+        if turn is not None and turn.fixed_reply:
+            st.html(
+                f'<div class="mp-muted">This reply is the fact check of {ui.escape(turn.document_name)} '
+                "against Wikipedia, made when the file was attached; no AI answer was written, so "
+                "there is nothing to audit. Every claim is in the table under the file name.</div>"
+            )
+            return
         if turn is not None and turn.not_in_document:
             st.html(
                 f'<div class="mp-muted">No part of {ui.escape(turn.document_name)} matched this '
@@ -475,6 +484,10 @@ def question_input(question: str) -> dict:
     document = st.session_state.get("document")
     if document is None:
         return new_question_input(question)
+    if factcheck.asks_to_check_document(question):
+        # "Is this information correct?": answer with the fact check, not from the text.
+        summary = factcheck.summary_reply(current_fact_check(), document.name)
+        return new_question_input(question, document.name, fixed_reply=summary)
     return new_question_input(question, document.name, find_passages(document, question))
 
 
