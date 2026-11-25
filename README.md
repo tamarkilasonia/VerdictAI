@@ -69,8 +69,8 @@ the interrupt are explained in [docs/how-it-works.md](docs/how-it-works.md#workf
 
 ## Quick start
 
-Requirements: Python 3.12, an internet connection and free API keys (Groq; optionally
-Gemini).
+Requirements: Python 3.12, an internet connection and one free Groq API key
+([console.groq.com](https://console.groq.com)): all three models run on Groq.
 
 ```bash
 # 1. Create a virtual environment and install the dependencies
@@ -79,7 +79,7 @@ source .venv/bin/activate
 pip install -r requirements.txt     # includes PyTorch, so it takes a few minutes
 
 # 2. Create your settings file and paste your keys into it
-cp .env.example .env                # PRIMARY_API_KEY, SECONDARY_API_KEY
+cp .env.example .env                # SECONDARY_API_KEY (your Groq key)
 
 # 3. Run
 streamlit run app.py                # opens http://localhost:8501
@@ -88,9 +88,8 @@ streamlit run app.py                # opens http://localhost:8501
 pytest -q
 ```
 
-The first question downloads the embedding model (~470 MB). To run everything on Groq
-with one key, and for all settings and model choices, see
-[docs/configuration.md](docs/configuration.md).
+The first question downloads the embedding model (~470 MB). For all settings, the model
+choices and how to use Gemini instead, see [docs/configuration.md](docs/configuration.md).
 
 ## Deployment
 

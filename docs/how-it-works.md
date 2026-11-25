@@ -5,8 +5,8 @@
 ## What happens when you ask a question
 
 1. **Two answers in parallel.** Two AI services get the question plus the last few chat
-   messages at the same time: a **primary** model (Google Gemini by default, or a Groq
-   model, see [setup](configuration.md)) and **Groq** (secondary, Qwen)
+   messages at the same time: a **primary** model (`openai/gpt-oss-20b` on Groq by
+   default, see [setup](configuration.md)) and **Groq** (secondary, Qwen)
 2. **Agreement check.** Both answers are embedded with
    `paraphrase-multilingual-MiniLM-L12-v2` (local, free) and compared with cosine
    similarity (threshold 0.80). The score is shown in the analysis panel
