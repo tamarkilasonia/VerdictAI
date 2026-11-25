@@ -1,0 +1,30 @@
+# Runs the test suite on every push and pull request.
+# PyTorch is not installed: the tests replace the embedding model with a fake,
+# and agreement.py imports sentence_transformers only when the model is used,
+# so installing it (and PyTorch, ~2 GB) would only make CI slow.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies (without sentence-transformers / PyTorch)
+        run: |
+          grep -v '^sentence-transformers' requirements.txt > ci-requirements.txt
+          python -m pip install --upgrade pip
+          pip install -r ci-requirements.txt
+
+      - name: Run the tests
+        run: pytest -q

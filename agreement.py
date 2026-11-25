@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+if TYPE_CHECKING:  # only for the type hint; the real import is in get_embedder
+    from sentence_transformers import SentenceTransformer
 
 # ~470 MB, free and local. Chosen when the app also answered in Georgian; it
 # works as well for English, and the thresholds (AGREEMENT_THRESHOLD in .env,
@@ -32,7 +35,14 @@ def get_embedder() -> SentenceTransformer:
 
     The first run downloads the model from Hugging Face; later runs use the
     local copy. Retrieval (Phase 5) reuses this same model.
+
+    sentence_transformers (and with it PyTorch) is imported here, on first
+    use, not at the top of the module: the tests replace embed() with a fake,
+    so they run without PyTorch installed (that keeps CI fast). The app loads
+    the model on the first embedding, exactly as before.
     """
+    from sentence_transformers import SentenceTransformer
+
     return SentenceTransformer(EMBEDDING_MODEL)
 
 

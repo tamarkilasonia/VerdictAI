@@ -2,6 +2,8 @@
 
 # VerdictAi
 
+[![tests](https://github.com/tamarkilasonia/VerdictAI/actions/workflows/tests.yml/badge.svg)](https://github.com/tamarkilasonia/VerdictAI/actions/workflows/tests.yml)
+
 **Try it online: [verdic-t-ai.streamlit.app](https://verdic-t-ai.streamlit.app)**
 
 **A chat app that does not blindly trust one LLM.**
@@ -216,7 +218,8 @@ answers never shown), Wikipedia's own answer (with the reason shown), the combin
 and its fallback to separate checks, the low reasoning effort for gpt-oss, empty answers asked again, formulas rewritten for display, attached PDFs (reading, page and size limits, scanned, broken and password-protected files, page-numbered chunks, search, "not in the document" without asking the models, no Wikipedia in document mode, the log fields), the PDF fact check (claim extraction and cut-off replies, claims from every page, batches of 5, matching auditor issues to claims, confirmed / contradicted / can't be checked, waiting for the per-minute limit, warnings, the summary for "is this correct?"), no revision or retry
 when the auditor's daily limit is used up, the two-service settings and the error messages (rate limit,
 wrong key, unknown model, busy service). They use fakes instead of real AI services
-and embeddings, so they need neither API keys nor internet.
+and embeddings, so they need neither API keys nor internet, nor PyTorch. GitHub Actions
+runs them on every push and pull request (`.github/workflows/tests.yml`).
 
 ---
 
