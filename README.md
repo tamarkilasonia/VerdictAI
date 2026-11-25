@@ -59,8 +59,8 @@ know, and you can ask for a **corrected answer** built from the evidence. It wor
    issues and the evidence; the new answer is audited again (at most 2 revisions).
 7. **Audit trail.** Every interaction is appended to `logs/audit_log.jsonl`
    (downloadable with the *Download log* button in the header).
-8. **Answers from your own PDF.** Click 📎 in the input field and attach one English,
-   text-based PDF (up to 50 pages, 10 MB). Its name appears above the field with ✕ to
+8. **Answers from your own PDF.** Click the attach button in the input field and attach one English,
+   text-based PDF (up to 50 pages, 10 MB). Its name appears above the field with a button to
    remove it. While it is attached, the text is split into short chunks that remember
    their page, and the 4 chunks closest to your question go to both models, which must
    answer only from them and cite the page, e.g. *(report.pdf, page 4)*. The auditor
