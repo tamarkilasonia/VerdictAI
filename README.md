@@ -79,7 +79,7 @@ know, and you can ask for a **corrected answer** built from the evidence. It wor
    primary model lists the claims (one per sentence, with its page); up to 20 are
    checked, taken from all pages. Each claim gets its own Wikipedia passages, and the
    existing auditor checks 5 claims per request to save Groq's limit. The result is a
-   table under the file name: page, claim, ✅ confirmed / ❌ contradicted / ⚠️ can't be
+   table under the file name: page, claim, confirmed / contradicted / can't be
    checked, the correct fact and the source. *Can't be checked* (Wikipedia neither
    confirms nor denies it) is kept apart from *contradicted*. Results are kept for the
    session, so attaching the same file again does not repeat the check. If an answer
