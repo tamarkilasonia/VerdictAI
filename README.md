@@ -345,3 +345,28 @@ a hallucination score is capped at 0.2 unless a claim is really *CONTRADICTED*
   (databases are out of scope for this project).
 - **Speed.** Depends on the services' load; free tiers may also slow down or pause
   requests when the per-minute limit is reached.
+
+---
+
+## Future work
+
+- **Caching results.** Keep the answers, Wikipedia passages and audits of questions that
+  were already asked (and fact checks of files already seen) in a cache, so a repeated
+  question costs no AI request and stays within Groq's free limits.
+- **A per-user limit in the public app.** The online version shares one Groq key, so one
+  visitor can use up the daily limit for everyone. A small limit per session (for example
+  a number of questions and fact checks per hour) would keep the app usable for all.
+- **Georgian support again.** The app answered in Georgian earlier but was made
+  English-only, because the free models wrote poor Georgian and Georgian Wikipedia is much
+  smaller. Stronger multilingual models would make it worth bringing back.
+- **Sources beyond Wikipedia.** Wikipedia's introductions do not cover recent events,
+  niche topics or exact details (e.g. Columbus's 1498 voyage). Other trusted sources, such
+  as encyclopedias, news archives or a web search used only when Wikipedia is silent,
+  would leave fewer claims "can't be checked".
+- **Preferring the main article.** Two false alarms came from side articles (*Types of
+  periodic tables* instead of *Periodic table*, *Space station* instead of *International
+  Space Station*). Ranking the article whose title matches the claim's topic above related
+  articles would avoid this.
+- **Memory in a database.** Conversations and fact checks live in RAM and disappear when
+  the server restarts. LangGraph's SQLite or Postgres checkpointer would keep them, and
+  would let several app instances share them.
